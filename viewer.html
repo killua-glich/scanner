@@ -199,6 +199,20 @@
     fill: var(--edge);
     stroke: none;
   }
+  /* Invisible wide hit target so a thin edge line stays clickable; the
+     parent svg is pointer-events:none so this needs its own override. */
+  svg#edges path.edge-hit {
+    fill: none;
+    stroke: transparent;
+    stroke-width: 14px;
+    pointer-events: stroke;
+    cursor: pointer;
+  }
+  svg#edges .edge.edge-selected path.edge-line {
+    stroke: var(--link);
+    stroke-width: 2px;
+  }
+  svg#edges .edge.edge-selected path.edge-arrow { fill: var(--link); }
   svg#edges .edge-label-bg {
     fill: var(--edge-label-bg);
   }
@@ -417,6 +431,7 @@
     color: var(--accent, var(--muted));
   }
   .panel-label { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
+  .panel-label-edge { font-size: 13px; font-weight: 600; letter-spacing: -0.005em; }
   .panel-badge {
     display: inline-block;
     margin-top: 5px;
@@ -916,7 +931,9 @@ if (typeof module !== 'undefined') module.exports = { layout, routeEdges };
   let cardEls = {};
   let edgeEls = {};
   let selectedId = null;
+  let selectedEdgeIdx = null;
   let hoveredId = null;
+  let hoveredEdgeIdx = null;
   let tracedId = null;
   let dragDepth = 0;
 
@@ -1065,12 +1082,13 @@ if (typeof module !== 'undefined') module.exports = { layout, routeEdges };
       if (!route) { edgeMeta.push(null); return; }
       const { points, dir, x2, y2 } = route;
       const d = roundedPathD(points);
-      edgeMeta.push({ from: e.from, to: e.to, kind: e.kind, d });
+      edgeMeta.push({ from: e.from, to: e.to, kind: e.kind, label: e.label, d });
       const { x: labelX, y: labelY } = longestSegmentMid(points);
       parts.push(`
         <g class="edge" data-idx="${idx}" data-from="${escapeHtml(e.from)}" data-to="${escapeHtml(e.to)}" data-kind="${escapeHtml(e.kind || '')}">
           <path class="edge-line" pathLength="1" d="${d}"></path>
           <path class="edge-arrow" d="${arrowPath(x2, y2, dir)}"></path>
+          <path class="edge-hit" d="${d}"></path>
           <text class="edge-kind-label" x="${labelX}" y="${labelY - 12}" text-anchor="middle">${escapeHtml(e.kind || '')}</text>`);
       if (e.label) {
         const w = Math.max(24, e.label.length * 6 + 10);
@@ -1213,18 +1231,76 @@ if (typeof module !== 'undefined') module.exports = { layout, routeEdges };
   function handleCardClick(id, kind) {
     if (selectedId === id) { closeSelection(); return; }
     selectedId = id;
+    selectedEdgeIdx = null;
     detailPanelEl.innerHTML = detailPanelHtml(id);
     detailPanelEl.classList.add('open');
     updateSelectionClasses();
+    updateEdgeSelectionClasses();
     if (kind === 'entry' || kind === 'cron') startTrace(id);
     else clearTrace();
   }
 
   function closeSelection() {
     selectedId = null;
+    selectedEdgeIdx = null;
     detailPanelEl.classList.remove('open');
     updateSelectionClasses();
+    updateEdgeSelectionClasses();
     clearTrace();
+  }
+
+  // ---- Edge selection + detail panel ----
+
+  function updateEdgeSelectionClasses() {
+    Object.values(edgeEls).forEach(el => el.classList.remove('edge-selected'));
+    if (selectedEdgeIdx !== null && edgeEls[selectedEdgeIdx]) edgeEls[selectedEdgeIdx].classList.add('edge-selected');
+  }
+
+  function edgeEndpointHtml(node, id) {
+    if (!node) return `<li class="conn-empty">${escapeHtml(id)}</li>`;
+    const glyph = KIND_GLYPH[node.kind] || '•';
+    return `<li class="conn-item" data-jump="${escapeHtml(id)}">
+      <span class="conn-kind">${glyph} ${escapeHtml(KIND_LABEL[node.kind] || node.kind)}</span> ${escapeHtml(node.label)}
+    </li>`;
+  }
+
+  function edgeDetailPanelHtml(idx) {
+    const meta = edgeMeta[idx];
+    if (!meta) return '';
+    const fromNode = adj.byId[meta.from];
+    const toNode = adj.byId[meta.to];
+    const fromLabel = fromNode ? fromNode.label : meta.from;
+    const toLabel = toNode ? toNode.label : meta.to;
+    return `
+      <div>
+        <div class="panel-head">
+          <div>
+            <div class="panel-label panel-label-edge">${escapeHtml(fromLabel)} &rarr; ${escapeHtml(toLabel)}</div>
+            <span class="panel-badge" style="--accent:${meta.kind ? 'var(--link)' : 'var(--muted)'}">${escapeHtml(meta.kind || 'edge')}</span>
+          </div>
+          <button class="panel-close" type="button" aria-label="Close">&times;</button>
+        </div>
+        ${meta.label ? `<p class="panel-detail">${escapeHtml(meta.label)}</p>` : ''}
+        <div class="panel-section">
+          <h4>From</h4>
+          <ul class="conn-list">${edgeEndpointHtml(fromNode, meta.from)}</ul>
+        </div>
+        <div class="panel-section">
+          <h4>To</h4>
+          <ul class="conn-list">${edgeEndpointHtml(toNode, meta.to)}</ul>
+        </div>
+      </div>`;
+  }
+
+  function handleEdgeClick(idx) {
+    if (selectedEdgeIdx === idx) { closeSelection(); return; }
+    selectedId = null;
+    selectedEdgeIdx = idx;
+    clearTrace();
+    detailPanelEl.innerHTML = edgeDetailPanelHtml(idx);
+    detailPanelEl.classList.add('open');
+    updateSelectionClasses();
+    updateEdgeSelectionClasses();
   }
 
   // ---- Hover highlight (TICKET-10) ----
@@ -1247,6 +1323,24 @@ if (typeof module !== 'undefined') module.exports = { layout, routeEdges };
     hoveredId = null;
     stageEl.classList.remove('hover-active');
     document.querySelectorAll('.hover-reveal').forEach(el => el.classList.remove('hover-reveal'));
+  }
+
+  // Lightweight edge-only hover: just reveals that edge's kind label, no
+  // dimming of the rest of the map (unlike node hover's setHover above).
+  function setEdgeHover(g) {
+    if (!g) return;
+    const idx = +g.dataset.idx;
+    if (idx === hoveredEdgeIdx) return;
+    clearEdgeHover();
+    hoveredEdgeIdx = idx;
+    g.classList.add('hover-reveal');
+  }
+
+  function clearEdgeHover() {
+    if (hoveredEdgeIdx === null) return;
+    const g = edgeEls[hoveredEdgeIdx];
+    if (g) g.classList.remove('hover-reveal');
+    hoveredEdgeIdx = null;
   }
 
   // ---- Flow trace (TICKET-11): BFS downstream from an entry/cron node ----
@@ -1304,7 +1398,7 @@ if (typeof module !== 'undefined') module.exports = { layout, routeEdges };
     let panPointer = null;
 
     mainEl.addEventListener('pointerdown', e => {
-      if (e.button !== 0 || e.target.closest('.card')) return;
+      if (e.button !== 0 || e.target.closest('.card') || e.target.closest('.edge-hit')) return;
       panPointer = { id: e.pointerId, x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty, moved: false };
       mainEl.setPointerCapture(e.pointerId);
       mainEl.classList.add('panning');
@@ -1348,17 +1442,31 @@ if (typeof module !== 'undefined') module.exports = { layout, routeEdges };
 
     stageEl.addEventListener('click', e => {
       const card = e.target.closest('.card');
-      if (card) handleCardClick(card.dataset.id, card.dataset.kind);
+      if (card) { handleCardClick(card.dataset.id, card.dataset.kind); return; }
+      const edgeG = e.target.closest('.edge');
+      if (edgeG) handleEdgeClick(+edgeG.dataset.idx);
     });
     stageEl.addEventListener('pointerover', e => {
       const card = e.target.closest('.card');
-      const id = card ? card.dataset.id : null;
-      if (id === hoveredId) return;
-      if (id) setHover(id); else clearHover();
+      if (card) {
+        clearEdgeHover();
+        if (card.dataset.id !== hoveredId) setHover(card.dataset.id);
+        return;
+      }
+      const edgeHit = e.target.closest('.edge-hit');
+      if (edgeHit) {
+        if (hoveredId) clearHover();
+        setEdgeHover(edgeHit.closest('.edge'));
+        return;
+      }
+      clearHover();
+      clearEdgeHover();
     });
     stageEl.addEventListener('pointerout', e => {
       const toCard = e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('.card');
+      const toEdgeHit = e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('.edge-hit');
       if (!toCard && hoveredId) clearHover();
+      if (!toEdgeHit && hoveredEdgeIdx !== null) clearEdgeHover();
     });
 
     detailPanelEl.addEventListener('click', e => {
@@ -1515,7 +1623,9 @@ if (typeof module !== 'undefined') module.exports = { layout, routeEdges };
     try { localStorage.setItem(SPACING_KEY, String(spacing)); } catch { /* private mode etc. */ }
     if (!dataLoaded) return;
     const prevSelected = selectedId;
+    const prevSelectedEdge = selectedEdgeIdx;
     clearHover();
+    clearEdgeHover();
     render(window.__scanData); // render() already fits-to-view internally
     // render()/closeSelection() reset selection — reopen it (and its trace)
     // the same way handleCardClick does, if the node survived the re-layout.
@@ -1526,6 +1636,12 @@ if (typeof module !== 'undefined') module.exports = { layout, routeEdges };
       updateSelectionClasses();
       const kind = adj.byId[selectedId].kind;
       if (kind === 'entry' || kind === 'cron') startTrace(selectedId);
+    } else if (prevSelectedEdge !== null && edgeMeta[prevSelectedEdge]) {
+      // Edge indices are stable across a re-layout (same graph.edges order).
+      selectedEdgeIdx = prevSelectedEdge;
+      detailPanelEl.innerHTML = edgeDetailPanelHtml(selectedEdgeIdx);
+      detailPanelEl.classList.add('open');
+      updateEdgeSelectionClasses();
     }
   }
 
