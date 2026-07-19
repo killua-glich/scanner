@@ -640,7 +640,211 @@ function layout(graph) {
   return { nodes: positioned, groups: groupBoxes, size: { w: maxRowWidth, h: Math.max(0, y - GAP_Y) }, backEdges: [...backEdges] };
 }
 
-if (typeof module !== 'undefined') module.exports = { layout };
+// ---- Edge routing: corridor + channel router — also pure/DOM-free, so
+// check.js can assert routed paths never cross a card. Given laid-out node
+// rects, group-box rects, and the edge list, routeEdges() returns one
+// {points,dir,x2,y2} per edge (or null for a dangling ref): a minimal
+// polyline of axis-aligned segments from source anchor to target anchor that
+// avoids every card and every *unrelated* group box (a card's own group box
+// is excluded from its obstacle list — routing legitimately has to cross
+// into it to reach a member — but sibling cards inside that box still block).
+//
+// Algorithm: build a small Manhattan grid from the x/y edges of the
+// obstacles near this edge's vertical span (candidate travel lines sit at
+// the midpoint between two obstacle boundaries, so they're clear by
+// construction), then Dijkstra shortest-path over 4-directional adjacent
+// grid hops with a turn penalty so it prefers long straight runs over
+// zigzags — i.e. exactly the "corridor" (horizontal run) + "channel"
+// (vertical run) shape, just solved generally instead of assuming a single
+// jog. This also correctly threads edges into/out of stacked group members,
+// where a plain "gap between rows" doesn't reach the card at all.
+
+const ROUTE_PAD = 8, ROUTE_EPS = 0.01, ROUTE_TURN_PENALTY = 1000, ROUTE_MARGIN = 80;
+
+function routeInflate(r) { return { x: r.x - ROUTE_PAD, y: r.y - ROUTE_PAD, w: r.w + 2 * ROUTE_PAD, h: r.h + 2 * ROUTE_PAD }; }
+
+function routeVClear(x, yA, yB, obstacles) {
+  const ylo = Math.min(yA, yB), yhi = Math.max(yA, yB);
+  if (yhi - ylo < ROUTE_EPS) return true;
+  return !obstacles.some(r => x > r.x + ROUTE_EPS && x < r.x + r.w - ROUTE_EPS && yhi > r.y + ROUTE_EPS && ylo < r.y + r.h - ROUTE_EPS);
+}
+function routeHClear(y, xA, xB, obstacles) {
+  const xlo = Math.min(xA, xB), xhi = Math.max(xA, xB);
+  if (xhi - xlo < ROUTE_EPS) return true;
+  return !obstacles.some(r => y > r.y + ROUTE_EPS && y < r.y + r.h - ROUTE_EPS && xhi > r.x + ROUTE_EPS && xlo < r.x + r.w - ROUTE_EPS);
+}
+
+function routeEdgeAnchors(a, b) {
+  const aCx = a.x + a.w / 2, bCx = b.x + b.w / 2;
+  const down = (b.y + b.h / 2) >= (a.y + a.h / 2);
+  const y1 = down ? a.y + a.h : a.y;
+  const y2 = down ? b.y : b.y + b.h;
+  return { x1: aCx, y1, x2: bCx, y2, dir: down ? 1 : -1 };
+}
+
+function routeSortedUnique(arr) {
+  return [...new Set(arr.map(v => Math.round(v * 100) / 100))].sort((a, b) => a - b);
+}
+
+// Candidate travel lines: midpoints between consecutive obstacle boundaries
+// (guaranteed clear), plus the anchor coordinates themselves, plus a little
+// headroom past the outermost boundary so a route can swing wide if needed.
+function routeGridLines(boundaries, anchors) {
+  const raw = routeSortedUnique(boundaries);
+  const lines = new Set(anchors);
+  for (let i = 0; i < raw.length - 1; i++) lines.add((raw[i] + raw[i + 1]) / 2);
+  if (raw.length) { lines.add(raw[0] - 40); lines.add(raw[raw.length - 1] + 40); }
+  return routeSortedUnique([...lines]);
+}
+
+// Minimal binary min-heap for Dijkstra (grids here are small: no library needed).
+class RouteHeap {
+  constructor() { this.a = []; }
+  push(pri, val) {
+    const a = this.a; a.push([pri, val]);
+    let i = a.length - 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (a[p][0] <= a[i][0]) break;
+      [a[p], a[i]] = [a[i], a[p]]; i = p;
+    }
+  }
+  pop() {
+    const a = this.a;
+    if (!a.length) return null;
+    const top = a[0];
+    const last = a.pop();
+    if (a.length) {
+      a[0] = last; let i = 0;
+      for (;;) {
+        const l = 2 * i + 1, r = 2 * i + 2; let m = i;
+        if (l < a.length && a[l][0] < a[m][0]) m = l;
+        if (r < a.length && a[r][0] < a[m][0]) m = r;
+        if (m === i) break;
+        [a[m], a[i]] = [a[i], a[m]]; i = m;
+      }
+    }
+    return top;
+  }
+  get size() { return this.a.length; }
+}
+
+// Dijkstra over the (xs × ys) grid, 4-directional adjacent hops only
+// (composing clear adjacent hops always yields a clear longer run), with a
+// turn-penalty state so ties resolve toward the straightest path.
+function routeGridPath(x1, y1, x2, y2, xs, ys, obstacles) {
+  const xi1 = xs.indexOf(x1), yi1 = ys.indexOf(y1);
+  const xi2 = xs.indexOf(x2), yi2 = ys.indexOf(y2);
+  if (xi1 < 0 || yi1 < 0 || xi2 < 0 || yi2 < 0) return null;
+  const nx = xs.length, ny = ys.length;
+  const key = (xi, yi, dir) => (xi * ny + yi) * 3 + dir; // dir: 0 none, 1 horiz, 2 vert
+  const dist = new Float64Array(nx * ny * 3).fill(Infinity);
+  const prevKey = new Int32Array(nx * ny * 3).fill(-1);
+  const heap = new RouteHeap();
+  const startKey = key(xi1, yi1, 0);
+  dist[startKey] = 0;
+  heap.push(0, startKey);
+
+  function decode(k) { const dir = k % 3; const t = (k - dir) / 3; const yi = t % ny; const xi = (t - yi) / ny; return { xi, yi, dir }; }
+
+  let goalKey = -1;
+  while (heap.size) {
+    const [d, k] = heap.pop();
+    if (d > dist[k]) continue;
+    const { xi, yi, dir } = decode(k);
+    if (xi === xi2 && yi === yi2) { goalKey = k; break; }
+    const x = xs[xi], y = ys[yi];
+    const moves = [];
+    if (xi > 0) moves.push([xi - 1, yi, 1, Math.abs(xs[xi - 1] - x)]);
+    if (xi < nx - 1) moves.push([xi + 1, yi, 1, Math.abs(xs[xi + 1] - x)]);
+    if (yi > 0) moves.push([xi, yi - 1, 2, Math.abs(ys[yi - 1] - y)]);
+    if (yi < ny - 1) moves.push([xi, yi + 1, 2, Math.abs(ys[yi + 1] - y)]);
+    for (const [nxi, nyi, ndir, len] of moves) {
+      const clear = ndir === 1 ? routeHClear(y, x, xs[nxi], obstacles) : routeVClear(x, y, ys[nyi], obstacles);
+      if (!clear) continue;
+      const turn = dir !== 0 && dir !== ndir ? ROUTE_TURN_PENALTY : 0;
+      const nk = key(nxi, nyi, ndir);
+      const nd = d + len + turn;
+      if (nd < dist[nk]) { dist[nk] = nd; prevKey[nk] = k; heap.push(nd, nk); }
+    }
+  }
+  if (goalKey < 0) return null;
+  const pts = [];
+  let k = goalKey;
+  while (k >= 0) { const { xi, yi } = decode(k); pts.push({ x: xs[xi], y: ys[yi] }); k = prevKey[k]; }
+  pts.reverse();
+  // Collapse collinear runs into single segments.
+  const collapsed = [pts[0]];
+  for (let i = 1; i < pts.length; i++) {
+    const p = pts[i];
+    const prev = collapsed[collapsed.length - 1];
+    if (collapsed.length >= 2) {
+      const prev2 = collapsed[collapsed.length - 2];
+      const sameDirAsBefore = (prev2.x === prev.x && prev.x === p.x) || (prev2.y === prev.y && prev.y === p.y);
+      if (sameDirAsBefore) { collapsed[collapsed.length - 1] = p; continue; }
+    }
+    if (Math.abs(prev.x - p.x) > ROUTE_EPS || Math.abs(prev.y - p.y) > ROUTE_EPS) collapsed.push(p);
+  }
+  return collapsed;
+}
+
+// Deterministic small jitter on interior vertical channel segments only
+// (never on the stubs touching the anchors), so parallel edges sharing a
+// corridor/gap don't draw exactly on top of each other. Only kept when the
+// shifted segment (and its adjoining jogs) re-validate as clear.
+function routeApplyStagger(points, idx, obstacles, x1, x2) {
+  const offset = (idx % 5 - 2) * 7;
+  if (!offset || points.length < 3) return points;
+  const out = points.map(p => ({ ...p }));
+  for (let i = 1; i < out.length - 1; i++) {
+    const prev = out[i - 1], cur = out[i], next = out[i + 1];
+    if (!(prev.x === cur.x && cur.x === next.x)) continue; // only vertical channels
+    if (Math.abs(cur.x - x1) < ROUTE_EPS || Math.abs(cur.x - x2) < ROUTE_EPS) continue; // keep anchor-aligned runs put
+    const xs2 = cur.x + offset;
+    if (!routeVClear(xs2, prev.y, next.y, obstacles)) continue;
+    const prevPrev = out[i - 2], nextNext = out[i + 2];
+    const legInClear = !prevPrev || routeHClear(prev.y, prevPrev.x, xs2, obstacles);
+    const legOutClear = !nextNext || routeHClear(next.y, xs2, nextNext.x, obstacles);
+    if (legInClear && legOutClear) { prev.x = xs2; cur.x = xs2; next.x = xs2; }
+  }
+  return out;
+}
+
+function routeOneEdge(idx, from, to, posById, groupBoxesInflated, cardsInflated, nodeGroup) {
+  const a = posById[from], b = posById[to];
+  if (!a || !b) return null;
+  const { x1, y1, x2, y2, dir } = routeEdgeAnchors(a, b);
+
+  const excludeIds = new Set([from, to]);
+  const excludeGroups = new Set([nodeGroup[from], nodeGroup[to]].filter(Boolean));
+  const obstacles = cardsInflated.filter(r => !excludeIds.has(r.id))
+    .concat(groupBoxesInflated.filter(r => !excludeGroups.has(r.group)));
+
+  if (Math.abs(x1 - x2) < 1 && routeVClear(x1, y1, y2, obstacles)) {
+    return { points: [{ x: x1, y: y1 }, { x: x2, y: y2 }], dir, x2, y2 };
+  }
+
+  const ylo = Math.min(y1, y2), yhi = Math.max(y1, y2);
+  const relevant = obstacles.filter(r => r.y < yhi + ROUTE_MARGIN && r.y + r.h > ylo - ROUTE_MARGIN);
+  const xs = routeGridLines(relevant.flatMap(r => [r.x, r.x + r.w]), [x1, x2]);
+  const ys = routeGridLines(relevant.flatMap(r => [r.y, r.y + r.h]), [y1, y2]);
+
+  let points = routeGridPath(x1, y1, x2, y2, xs, ys, obstacles);
+  if (!points) points = [{ x: x1, y: y1 }, { x: x2, y: y1 }, { x: x2, y: y2 }]; // pathological fallback, should not occur on real data
+  else points = routeApplyStagger(points, idx, obstacles, x1, x2);
+
+  return { points, dir, x2, y2 };
+}
+
+// edges: graph.edges. posById: {id:{x,y,w,h}} (layout() output, keyed by id).
+// groupBoxes: layout().groups. nodeGroup: {id: groupName} built from graph.nodes.
+function routeEdges(edges, posById, groupBoxes, nodeGroup) {
+  const cardsInflated = Object.entries(posById).map(([id, r]) => ({ id, ...routeInflate(r) }));
+  const groupBoxesInflated = groupBoxes.map(g => ({ group: g.group, ...routeInflate(g) }));
+  return edges.map((e, idx) => routeOneEdge(idx, e.from, e.to, posById, groupBoxesInflated, cardsInflated, nodeGroup));
+}
+
+if (typeof module !== 'undefined') module.exports = { layout, routeEdges };
 </script>
 
 <script>
@@ -746,29 +950,45 @@ if (typeof module !== 'undefined') module.exports = { layout };
       </div>`;
   }
 
-  // Orthogonal edge path: straight when aligned, else vertical-out / horizontal jog / vertical-in.
-  function orthPath(x1, y1, x2, y2) {
-    if (Math.abs(x1 - x2) < 1) return { d: `M${x1},${y1} L${x2},${y2}`, dir: y2 >= y1 ? 1 : -1 };
-    const midY = (y1 + y2) / 2;
-    const dir = y2 >= y1 ? 1 : -1;
-    const dirX = x2 > x1 ? 1 : -1;
-    const r = Math.max(2, Math.min(14, Math.abs(midY - y1), Math.abs(x2 - x1) / 2));
-    const d = `M${x1},${y1} L${x1},${midY - dir * r} Q${x1},${midY} ${x1 + dirX * r},${midY}` +
-      ` L${x2 - dirX * r},${midY} Q${x2},${midY} ${x2},${midY + dir * r} L${x2},${y2}`;
-    return { d, dir };
-  }
-
   function arrowPath(x, y, dir) {
     const s = 5;
     return `M${x - s},${y - dir * s} L${x},${y} L${x + s},${y - dir * s} Z`;
   }
 
-  function edgeAnchors(a, b) {
-    const aCx = a._x + a.w / 2, bCx = b._x + b.w / 2;
-    const down = (b._y + b.h / 2) >= (a._y + a.h / 2);
-    const y1 = down ? a._y + a.h : a._y;
-    const y2 = down ? b._y : b._y + b.h;
-    return { x1: aCx, y1, x2: bCx, y2 };
+  // Turn a routed polyline (from routeEdges(), see layout-lib) into an SVG
+  // path with each interior corner rounded — same Q-corner technique the old
+  // single-jog path used, generalized to however many corners the route has
+  // (0 for a straight/aligned edge, more for a multi-corridor detour).
+  // Radius is clamped to half of whichever adjoining segment is shorter, so a
+  // short stub next to a card never grows a corner bigger than the stub.
+  function roundedPathD(points) {
+    if (points.length < 2) return '';
+    if (points.length === 2) return `M${points[0].x},${points[0].y} L${points[1].x},${points[1].y}`;
+    let d = `M${points[0].x},${points[0].y}`;
+    for (let i = 1; i < points.length - 1; i++) {
+      const prev = points[i - 1], cur = points[i], next = points[i + 1];
+      const segIn = Math.hypot(cur.x - prev.x, cur.y - prev.y);
+      const segOut = Math.hypot(next.x - cur.x, next.y - cur.y);
+      const r = Math.max(2, Math.min(14, segIn / 2, segOut / 2));
+      const inX = cur.x - (cur.x - prev.x) / segIn * r, inY = cur.y - (cur.y - prev.y) / segIn * r;
+      const outX = cur.x + (next.x - cur.x) / segOut * r, outY = cur.y + (next.y - cur.y) / segOut * r;
+      d += ` L${inX},${inY} Q${cur.x},${cur.y} ${outX},${outY}`;
+    }
+    const last = points[points.length - 1];
+    return d + ` L${last.x},${last.y}`;
+  }
+
+  // Labels/pills sit on the longest straight segment of the actual routed
+  // path (not a naive anchor-to-anchor midpoint), so they land on visible
+  // line inside a corridor/channel rather than under a card.
+  function longestSegmentMid(points) {
+    let best = null, bestLen = -1;
+    for (let i = 0; i < points.length - 1; i++) {
+      const a = points[i], b = points[i + 1];
+      const len = Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+      if (len > bestLen) { bestLen = len; best = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
+    }
+    return best || { x: points[0].x, y: points[0].y };
   }
 
   // edgeMeta[i] mirrors graph.edges[i]: { from, to, kind, d } — index-aligned so
@@ -776,28 +996,28 @@ if (typeof module !== 'undefined') module.exports = { layout };
   // index used in adjacency lists (parallel from/to edges can differ only by kind).
   let edgeMeta = [];
 
-  function renderEdges(edges, byId) {
+  function renderEdges(edges, posById, groupBoxes, nodeGroup) {
     const svg = document.getElementById('edges');
     const parts = [];
     edgeMeta = [];
+    const routes = routeEdges(edges, posById, groupBoxes, nodeGroup);
     edges.forEach((e, idx) => {
-      const a = byId[e.from], b = byId[e.to];
-      if (!a || !b) { edgeMeta.push(null); return; }
-      const { x1, y1, x2, y2 } = edgeAnchors(a, b);
-      const { d, dir } = orthPath(x1, y1, x2, y2);
+      const route = routes[idx];
+      if (!route) { edgeMeta.push(null); return; }
+      const { points, dir, x2, y2 } = route;
+      const d = roundedPathD(points);
       edgeMeta.push({ from: e.from, to: e.to, kind: e.kind, d });
-      const midY = (y1 + y2) / 2;
-      const midX = (x1 + x2) / 2;
+      const { x: labelX, y: labelY } = longestSegmentMid(points);
       parts.push(`
         <g class="edge" data-idx="${idx}" data-from="${escapeHtml(e.from)}" data-to="${escapeHtml(e.to)}" data-kind="${escapeHtml(e.kind || '')}">
           <path class="edge-line" pathLength="1" d="${d}"></path>
           <path class="edge-arrow" d="${arrowPath(x2, y2, dir)}"></path>
-          <text class="edge-kind-label" x="${midX}" y="${midY - 12}" text-anchor="middle">${escapeHtml(e.kind || '')}</text>`);
+          <text class="edge-kind-label" x="${labelX}" y="${labelY - 12}" text-anchor="middle">${escapeHtml(e.kind || '')}</text>`);
       if (e.label) {
         const w = Math.max(24, e.label.length * 6 + 10);
         parts.push(`
-          <rect class="edge-label-bg" x="${midX - w / 2}" y="${midY - 9}" width="${w}" height="16" rx="4"></rect>
-          <text class="edge-label-text" x="${midX}" y="${midY + 3}" text-anchor="middle">${escapeHtml(e.label)}</text>`);
+          <rect class="edge-label-bg" x="${labelX - w / 2}" y="${labelY - 9}" width="${w}" height="16" rx="4"></rect>
+          <text class="edge-label-text" x="${labelX}" y="${labelY + 3}" text-anchor="middle">${escapeHtml(e.label)}</text>`);
       }
       parts.push(`</g>`);
     });
@@ -835,6 +1055,8 @@ if (typeof module !== 'undefined') module.exports = { layout };
     result.nodes.forEach(n => { byId[n.id] = { ...n, _x: n.x, _y: n.y }; });
     const nodeById = {};
     graph.nodes.forEach(n => (nodeById[n.id] = n));
+    const nodeGroup = {};
+    graph.nodes.forEach(n => { if (n.group) nodeGroup[n.id] = n.group; });
 
     const cardsHtml = result.nodes.map(pos => cardHtml({ ...nodeById[pos.id], _x: pos.x, _y: pos.y })).join('');
     const groupsHtml = result.groups.map(groupBoxHtml).join('');
@@ -843,7 +1065,7 @@ if (typeof module !== 'undefined') module.exports = { layout };
     stageEl.style.height = result.size.h + 'px';
     stageEl.innerHTML = `<svg id="edges" width="${result.size.w}" height="${result.size.h}"></svg>${groupsHtml}${cardsHtml}`;
 
-    renderEdges(graph.edges || [], byId);
+    renderEdges(graph.edges || [], byId, result.groups, nodeGroup);
 
     // Rebuild interaction lookup tables against the fresh DOM/graph.
     adj = buildAdjacency(graph);
@@ -1183,6 +1405,36 @@ if (typeof module !== 'undefined') module.exports = { layout };
 
     (graph.edges || []).forEach(e => {
       if (!posById[e.from] || !posById[e.to]) fails.push(`edge ${e.from}->${e.to}: dangling reference`);
+    });
+
+    // Routed-edge guard: no segment of any edge's path may cross a card
+    // (cards render above the SVG and would visually swallow the line/label).
+    // Un-inflated rects, 2px tolerance so the path is allowed to touch the
+    // source/target card it legitimately starts/ends against.
+    const nodeGroup = {};
+    graph.nodes.forEach(n => { if (n.group) nodeGroup[n.id] = n.group; });
+    const routes = routeEdges(graph.edges || [], posById, result.groups, nodeGroup);
+    const GUARD_TOL = 2;
+    function segHitsCard(x1, y1, x2, y2, r) {
+      if (Math.abs(x1 - x2) < 0.01) {
+        const x = x1, ylo = Math.min(y1, y2), yhi = Math.max(y1, y2);
+        return x > r.x + GUARD_TOL && x < r.x + r.w - GUARD_TOL && yhi > r.y + GUARD_TOL && ylo < r.y + r.h - GUARD_TOL;
+      }
+      const y = y1, xlo = Math.min(x1, x2), xhi = Math.max(x1, x2);
+      return y > r.y + GUARD_TOL && y < r.y + r.h - GUARD_TOL && xhi > r.x + GUARD_TOL && xlo < r.x + r.w - GUARD_TOL;
+    }
+    (graph.edges || []).forEach((e, idx) => {
+      const route = routes[idx];
+      if (!route) return;
+      const pts = route.points;
+      for (let s = 0; s < pts.length - 1; s++) {
+        result.nodes.forEach(c => {
+          if (c.id === e.from || c.id === e.to) return;
+          if (segHitsCard(pts[s].x, pts[s].y, pts[s + 1].x, pts[s + 1].y, c)) {
+            fails.push(`edge ${e.from}->${e.to}: path crosses card ${c.id}`);
+          }
+        });
+      }
     });
 
     if (!ids.size) { /* empty graph is trivially fine */ }

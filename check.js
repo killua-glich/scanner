@@ -4,7 +4,9 @@
 // access in that block, so it runs as-is under plain Node) and lays out
 // sample/scan.json, asserting the same invariants as the in-browser
 // runSelfCheck(): every node gets coordinates, no NaNs, no overlaps, every
-// edge references a laid-out node, and non-back-edges point layer-forward.
+// edge references a laid-out node, non-back-edges point layer-forward, and
+// (since routeEdges() is DOM-free too) every routed edge path avoids every
+// card it doesn't start/end at.
 //
 // Usage: node check.js
 
@@ -19,8 +21,9 @@ if (!match) { console.error('FAIL: could not find <script id="layout-lib"> in vi
 const sandbox = { module: { exports: {} } };
 vm.createContext(sandbox);
 vm.runInContext(match[1], sandbox);
-const { layout } = sandbox.module.exports;
+const { layout, routeEdges } = sandbox.module.exports;
 if (typeof layout !== 'function') { console.error('FAIL: layout() was not exported'); process.exit(1); }
+if (typeof routeEdges !== 'function') { console.error('FAIL: routeEdges() was not exported'); process.exit(1); }
 
 const scan = JSON.parse(fs.readFileSync(path.join(__dirname, 'sample', 'scan.json'), 'utf8'));
 const graph = scan.graph;
@@ -58,9 +61,37 @@ graph.edges.forEach(e => {
   if (!isBack && !grouped && b.y < a.y) fails.push(`edge ${e.from}->${e.to}: forward edge points upward (y ${a.y} -> ${b.y})`);
 });
 
+// Routed-edge guard: no segment of any edge's path may cross a card other
+// than the one it starts/ends at (2px tolerance for touching that card).
+const nodeGroup = {};
+graph.nodes.forEach(n => { if (n.group) nodeGroup[n.id] = n.group; });
+const routes = routeEdges(graph.edges, posById, result.groups, nodeGroup);
+const GUARD_TOL = 2;
+function segHitsCard(x1, y1, x2, y2, r) {
+  if (Math.abs(x1 - x2) < 0.01) {
+    const x = x1, ylo = Math.min(y1, y2), yhi = Math.max(y1, y2);
+    return x > r.x + GUARD_TOL && x < r.x + r.w - GUARD_TOL && yhi > r.y + GUARD_TOL && ylo < r.y + r.h - GUARD_TOL;
+  }
+  const y = y1, xlo = Math.min(x1, x2), xhi = Math.max(x1, x2);
+  return y > r.y + GUARD_TOL && y < r.y + r.h - GUARD_TOL && xhi > r.x + GUARD_TOL && xlo < r.x + r.w - GUARD_TOL;
+}
+graph.edges.forEach((e, idx) => {
+  const route = routes[idx];
+  if (!route) return;
+  const pts = route.points;
+  for (let s = 0; s < pts.length - 1; s++) {
+    result.nodes.forEach(c => {
+      if (c.id === e.from || c.id === e.to) return;
+      if (segHitsCard(pts[s].x, pts[s].y, pts[s + 1].x, pts[s + 1].y, c)) {
+        fails.push(`edge ${e.from}->${e.to}: routed path crosses card ${c.id}`);
+      }
+    });
+  }
+});
+
 if (fails.length) {
   console.error(`FAIL: ${fails.length} violation(s)`);
   fails.forEach(f => console.error('  - ' + f));
   process.exit(1);
 }
-console.log(`OK: ${result.nodes.length} nodes, ${graph.edges.length} edges laid out, no overlaps, no dangling edges, no backward forward-edges.`);
+console.log(`OK: ${result.nodes.length} nodes, ${graph.edges.length} edges laid out and routed, no overlaps, no dangling edges, no backward forward-edges, no edge path crosses a card.`);
