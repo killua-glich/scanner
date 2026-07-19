@@ -468,6 +468,24 @@
     margin-bottom: 12px;
     word-break: break-all;
   }
+  .panel-snippet {
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    background: var(--bg);
+    border: 1px solid var(--card-border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin: 0 0 12px;
+    max-height: 220px;
+    overflow: auto;
+    white-space: pre;
+  }
+  .mode-chip {
+    color: var(--muted);
+    text-transform: uppercase;
+    font-size: 10.5px;
+    letter-spacing: 0.03em;
+  }
   .panel-section h4 {
     margin: 16px 0 6px;
     font-size: 10.5px;
@@ -490,6 +508,7 @@
   <p class="tagline" id="project-tagline"></p>
   <div class="meta">
     <span id="project-date"></span>
+    <span class="mode-chip" id="project-mode-chip"></span>
     <span><strong id="stat-agents">0</strong> agents</span>
     <span><strong id="stat-models">0</strong> models</span>
     <span><strong id="stat-tools">0</strong> tools</span>
@@ -965,6 +984,7 @@ if (typeof module !== 'undefined') module.exports = { layout, routeEdges };
     document.getElementById('project-name').textContent = p.name || 'Codebase Scan';
     document.getElementById('project-tagline').textContent = p.tagline || '';
     document.getElementById('project-date').textContent = p.date || '';
+    document.getElementById('project-mode-chip').textContent = p.mode === 'full' ? 'full scan' : '';
     const s = data.stats || {};
     document.getElementById('stat-agents').textContent = s.agents ?? 0;
     document.getElementById('stat-models').textContent = s.models ?? 0;
@@ -1209,6 +1229,7 @@ if (typeof module !== 'undefined') module.exports = { layout, routeEdges };
         ${node.sub ? `<p class="panel-sub">${escapeHtml(node.sub)}</p>` : ''}
         ${node.detail ? `<p class="panel-detail">${escapeHtml(node.detail)}</p>` : ''}
         ${node.sourceRef ? `<div class="panel-source">${escapeHtml(node.sourceRef)}</div>` : ''}
+        ${node.snippet ? `<pre class="panel-snippet">${escapeHtml(node.snippet)}</pre>` : ''}
         <div class="panel-section">
           <h4>Incoming</h4>
           <ul class="conn-list">${connHtml(adj.inc[id] || [], 'from')}</ul>

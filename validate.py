@@ -11,7 +11,10 @@ import sys
 
 NODE_KINDS = {"entry", "cron", "agent", "model", "tool", "service", "store", "external"}
 EDGE_KINDS = {"calls", "reads", "writes", "triggers"}
+MODES = {"standard", "full"}
 SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+SNIPPET_MAX_CHARS = 600
+SNIPPET_MAX_LINES = 12
 
 
 def check_len(errors, loc, value, cap, field):
@@ -39,6 +42,9 @@ def validate(data):
     if slug and not SLUG_RE.match(slug):
         errors.append(f"$.project.slug: {slug!r} must be lowercase-dashed")
     check_len(errors, "$.project", project.get("tagline", ""), 80, "tagline")
+    mode = project.get("mode")
+    if mode is not None and mode not in MODES:
+        errors.append(f"$.project.mode: {mode!r} not in {sorted(MODES)}")
 
     for key, cap in (("topModels", 3), ("topTools", 10), ("topIntegrations", 10)):
         items = data.get(key, [])
@@ -74,6 +80,13 @@ def validate(data):
         check_len(errors, loc, node.get("detail", ""), 200, "detail")
         check_len(errors, loc, node.get("sourceRef", ""), 120, "sourceRef")
         check_len(errors, loc, node.get("group", ""), 24, "group")
+
+        snippet = node.get("snippet")
+        if snippet is not None:
+            check_len(errors, loc, snippet, SNIPPET_MAX_CHARS, "snippet")
+            lines = snippet.count("\n") + 1
+            if lines > SNIPPET_MAX_LINES:
+                errors.append(f"{loc}.snippet: {lines} lines, max {SNIPPET_MAX_LINES}")
 
         domain = node.get("domain")
         if domain and "://" in domain:
@@ -114,6 +127,11 @@ def selftest():
         d["graph"]["edges"] = edges
         return d
 
+    def with_mode(mode):
+        d = copy.deepcopy(base)
+        d["project"]["mode"] = mode
+        return d
+
     cases = {
         "valid base case": (base, True),
         "bad edge ref": (
@@ -125,6 +143,16 @@ def selftest():
         "over-long label": (
             with_graph(
                 [{"id": "a", "label": "A" * 40, "kind": "entry"}, base_nodes[1]], [base_edge]), False),
+        "bad mode": (with_mode("advanced"), False),
+        "over-long snippet": (
+            with_graph(
+                [{"id": "a", "label": "A", "kind": "entry", "snippet": "x" * 601}, base_nodes[1]],
+                [base_edge]), False),
+        "over-many-lines snippet": (
+            with_graph(
+                [{"id": "a", "label": "A", "kind": "entry", "snippet": "\n".join(["x"] * 13)},
+                 base_nodes[1]],
+                [base_edge]), False),
     }
 
     failed = False

@@ -14,6 +14,18 @@ it, so write no HTML or CSS yourself.
 3. Tell the user where `scan.json` landed and how to look at it: run
    `serve.py`, or open `viewer.html` in a browser and drop the file in.
 
+## Scan modes
+The invoking context tells you which mode to run: **standard** or **full**.
+Default to standard if truly unspecified.
+- **standard**: today's behavior. Never include code; omit `snippet` entirely.
+- **full**: same map, plus optional code excerpts. Add `"mode": "full"` to
+  `project`. You may add `snippet` to a node when a handful of lines
+  genuinely identify it — an agent's model+prompt wiring, a tool's schema,
+  a cron expression. Rules: <=600 chars, <=12 lines, verbatim from the repo,
+  NEVER secrets/keys/tokens/URLs-with-credentials, and most nodes should NOT
+  have one (aim for <=1/3 of nodes). In full mode, also add a one-sentence
+  `detail` to every agent/service/tool node.
+
 ## What to look for
 - AI call sites, in whatever shape the stack uses:
   - JS/TS: the Vercel AI SDK surface (`generateText`, `streamText`,
@@ -51,7 +63,8 @@ it, so write no HTML or CSS yourself.
     "slug": "lowercase-dashed (<=48)",
     "tagline": "one line (<=80, optional)",
     "iconDomain": "favicon domain of the product, e.g. example.com (optional)",
-    "date": "YYYY-MM-DD"
+    "date": "YYYY-MM-DD",
+    "mode": "standard | full (optional, default standard)"
   },
   "stats": { "agents": 0, "models": 0, "tools": 0, "integrations": 0 },
   "topModels":       [ { "id": "sonnet", "label": "Claude Sonnet", "domain": "claude.ai" } ],
@@ -62,7 +75,8 @@ it, so write no HTML or CSS yourself.
       { "id": "inbox", "label": "Inbox webhook", "kind": "entry", "sub": "/hooks/inbound" },
       { "id": "sorter", "label": "Mail sorter agent", "kind": "agent", "sub": "tool loop",
         "sourceRef": "app/agents/sorter.py:31",
-        "detail": "Files each inbound mail into a folder and drafts a reply when confident." },
+        "detail": "Files each inbound mail into a folder and drafts a reply when confident.",
+        "snippet": "const { text } = await generateText({\n  model: anthropic('claude-sonnet-4-5'),\n  system: SORTER_PROMPT,\n});" },
       { "id": "sonnet", "label": "Claude Sonnet", "kind": "model", "domain": "claude.ai" },
       { "id": "folders", "label": "Folder service", "kind": "service",
         "sourceRef": "app/services/folders.py" },
@@ -106,5 +120,7 @@ it, so write no HTML or CSS yourself.
 - `detail` (optional, <=200): one sentence shown when the node is clicked.
   `sourceRef` (optional, <=120): repo-relative path with optional `:line`,
   so a teammate can jump straight to the code — add it to internal nodes.
+- `snippet` (optional, full mode only): <=600 chars and <=12 lines, verbatim
+  from the repo, never secrets/keys/tokens/URLs-with-credentials.
 - Edge `from`/`to` must name existing node ids; ids must be unique.
 - `project.date` is today's date.

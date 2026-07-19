@@ -5,7 +5,8 @@
     "slug": "helpflow",
     "tagline": "AI support desk that triages, answers, and escalates tickets",
     "iconDomain": "helpflowhq.com",
-    "date": "2026-07-19"
+    "date": "2026-07-19",
+    "mode": "full"
   },
   "stats": { "agents": 4, "models": 3, "tools": 3, "integrations": 3 },
   "topModels": [
@@ -39,6 +40,7 @@
       { "id": "support-agent", "label": "Support agent", "kind": "agent", "sub": "streamText",
         "sourceRef": "src/agents/support.ts:42",
         "detail": "Answers tickets with KB search and order lookups; escalates on low confidence.",
+        "snippet": "const result = streamText({\n  model: anthropic('claude-sonnet-4-5'),\n  system: SUPPORT_SYSTEM_PROMPT,\n  tools: { kbSearch, orderLookup, webSearch },\n  maxSteps: 6,\n});",
         "group": "Support pipeline" },
       { "id": "escalation-agent", "label": "Escalation agent", "kind": "agent", "sub": "generateText",
         "sourceRef": "src/agents/escalation.ts:12",
@@ -55,7 +57,8 @@
       { "id": "order-lookup-tool", "label": "Order lookup", "kind": "tool", "sub": "internal function",
         "sourceRef": "src/tools/orders.ts" },
       { "id": "kb-search-tool", "label": "KB search", "kind": "tool", "sub": "vector query",
-        "sourceRef": "src/tools/kb-search.ts" },
+        "sourceRef": "src/tools/kb-search.ts",
+        "snippet": "export const kbSearch = tool({\n  description: 'Search the help center KB by semantic similarity',\n  parameters: z.object({ query: z.string(), topK: z.number().default(5) }),\n  execute: async ({ query, topK }) => vectorIndex.query(query, topK),\n});" },
       { "id": "web-search-tool", "label": "Web search", "kind": "tool", "sub": "Exa search", "domain": "exa.ai" },
 
       { "id": "billing-service", "label": "Billing service", "kind": "service", "sub": "Stripe billing",

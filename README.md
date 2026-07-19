@@ -44,6 +44,15 @@ Update later with `git -C ~/.claude/skills/scanner pull`.
    Drag-and-drop a JSON file onto the viewer also works, including offline
    via `file://`.
 
+## Scan modes
+
+**standard** (default) maps architecture only — zero code in `scan.json`.
+**full** adds optional `snippet` fields (<=600 chars, <=12 lines each) on a
+minority of nodes to identify key wiring. A full-mode `scan.json` contains
+verbatim code excerpts from your repo, so treat it accordingly (don't upload
+it elsewhere). foglamp's uploader may reject full-mode files since they carry
+extra fields it doesn't expect — the local viewer here handles both modes.
+
 ## Schema summary
 
 `scan.json`: `version`, `project` (name/slug/tagline/iconDomain/date),

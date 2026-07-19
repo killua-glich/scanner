@@ -17,11 +17,16 @@ this SKILL.md) — referred to as `<skill-dir>` below.
    can't find a matching directory, ask the user for the path before doing
    anything else.
 
-2. **Investigate and write scan.json.** Follow `<skill-dir>/scan-prompt.md`
-   to analyze the target repo, and write the result to `<target>/scan.json`
-   (in the TARGET repo root, not the skill directory). If `<target>/scan.json`
-   already exists, tell the user you're regenerating it before overwriting —
-   after telling them, overwriting is fine, it's just derived data.
+2. **Investigate and write scan.json.** First determine the scan mode from
+   the user's wording: "full", "advanced", "deep", or "with code/snippets"
+   means full; "standard", "quick", or similar means standard. If the user
+   did not indicate a mode, ASK them ("Standard scan (architecture only) or
+   full scan (includes code snippets)?") before investigating. Then follow
+   `<skill-dir>/scan-prompt.md` to analyze the target repo, passing it the
+   chosen mode, and write the result to `<target>/scan.json` (in the TARGET
+   repo root, not the skill directory). If `<target>/scan.json` already
+   exists, tell the user you're regenerating it before overwriting — after
+   telling them, overwriting is fine, it's just derived data.
 
 3. **Validate.** Run:
    `python3 <skill-dir>/validate.py <target>/scan.json`
