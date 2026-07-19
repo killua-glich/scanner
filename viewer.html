@@ -121,8 +121,15 @@
     border-radius: 2px;
   }
 
-  .legend {
+  .legend-row {
     margin-top: 12px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .legend {
+    flex: 1 1 auto;
+    min-width: 0;
     display: flex;
     flex-wrap: wrap;
     gap: 4px 16px;
@@ -139,6 +146,26 @@
     height: 9px;
     border-radius: 2px;
     flex: none;
+  }
+
+  .spacing-control {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .spacing-control input[type="range"] {
+    width: 90px;
+    height: 14px;
+    accent-color: var(--link);
+  }
+  .spacing-control .spacing-readout {
+    font-variant-numeric: tabular-nums;
+    min-width: 26px;
+    text-align: right;
   }
 
   main {
@@ -454,7 +481,14 @@
     <span><strong id="stat-integrations">0</strong> integrations</span>
   </div>
   <div class="top-lists" id="top-lists"></div>
-  <div class="legend" id="legend"></div>
+  <div class="legend-row">
+    <div class="legend" id="legend"></div>
+    <div class="spacing-control">
+      <label for="spacing-slider">Spacing</label>
+      <input id="spacing-slider" type="range" min="0.8" max="2.5" step="0.1" value="1">
+      <span class="spacing-readout" id="spacing-readout">1.0&times;</span>
+    </div>
+  </div>
 </header>
 
 <main>
@@ -480,8 +514,8 @@
 // Pure layout engine — no DOM access, so it can run standalone in Node (see check.js)
 // or inside the browser. layout(graph) -> { nodes: [{id,x,y,w,h}], groups: [...], size: {w,h} }
 
-const CARD_W = 190, CARD_H = 64, GAP_X = 48, GAP_Y = 90;
-const GROUP_PAD = 14, GROUP_HEADER = 22, STACK_GAP = 10;
+const CARD_W = 190, CARD_H = 64, BASE_GAP_X = 48, BASE_GAP_Y = 90;
+const GROUP_PAD = 14, GROUP_HEADER = 22, BASE_STACK_GAP = 10;
 
 function findBackEdges(nodes, edges) {
   const out = {};
@@ -531,7 +565,10 @@ function assignLayers(nodes, edges, backEdges) {
   return layer;
 }
 
-function layout(graph) {
+function layout(graph, opts) {
+  const spacing = (opts && opts.spacing) || 1;
+  const GAP_X = BASE_GAP_X * spacing, GAP_Y = BASE_GAP_Y * spacing, STACK_GAP = BASE_STACK_GAP * spacing;
+
   const nodes = graph.nodes || [];
   const edges = graph.edges || [];
   if (!nodes.length) return { nodes: [], groups: [], size: { w: 0, h: 0 } };
@@ -733,6 +770,12 @@ class RouteHeap {
 // (composing clear adjacent hops always yields a clear longer run), with a
 // turn-penalty state so ties resolve toward the straightest path.
 function routeGridPath(x1, y1, x2, y2, xs, ys, obstacles) {
+  // xs/ys are built by routeSortedUnique(), which rounds every value to 2
+  // decimals — round the anchor coords the same way before indexOf, or float
+  // drift (e.g. 823.4000000000001 vs the rounded 823.4 grid line) makes a
+  // clean lookup miss and silently drops to the unsafe pathological fallback.
+  x1 = Math.round(x1 * 100) / 100; y1 = Math.round(y1 * 100) / 100;
+  x2 = Math.round(x2 * 100) / 100; y2 = Math.round(y2 * 100) / 100;
   const xi1 = xs.indexOf(x1), yi1 = ys.indexOf(y1);
   const xi2 = xs.indexOf(x2), yi2 = ys.indexOf(y2);
   if (xi1 < 0 || yi1 < 0 || xi2 < 0 || yi2 < 0) return null;
@@ -876,6 +919,22 @@ if (typeof module !== 'undefined') module.exports = { layout, routeEdges };
   let hoveredId = null;
   let tracedId = null;
   let dragDepth = 0;
+
+  // Block spacing: multiplies layout()'s gaps (see layout-lib). ?spacing= wins
+  // over the persisted value; slider min is 0.8 — below that the sample graph's
+  // routed edges get too tight for the router's corridor clearance (verified
+  // via sweep against sample/scan.json, see task notes).
+  const SPACING_MIN = 0.8, SPACING_MAX = 2.5;
+  const SPACING_KEY = 'scan-viewer-spacing';
+  function clampSpacing(v) { return Math.min(SPACING_MAX, Math.max(SPACING_MIN, v)); }
+  function initialSpacing() {
+    const urlVal = parseFloat(new URLSearchParams(window.location.search).get('spacing'));
+    if (!Number.isNaN(urlVal)) return clampSpacing(urlVal);
+    const stored = parseFloat(localStorage.getItem(SPACING_KEY));
+    if (!Number.isNaN(stored)) return clampSpacing(stored);
+    return 1;
+  }
+  let spacing = initialSpacing();
 
   function escapeHtml(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => (
@@ -1049,7 +1108,7 @@ if (typeof module !== 'undefined') module.exports = { layout, routeEdges };
     closeSelection();
     renderHeader(data);
     const graph = data.graph || { nodes: [], edges: [] };
-    const result = layout(graph);
+    const result = layout(graph, { spacing });
 
     const byId = {};
     result.nodes.forEach(n => { byId[n.id] = { ...n, _x: n.x, _y: n.y }; });
@@ -1449,8 +1508,44 @@ if (typeof module !== 'undefined') module.exports = { layout, routeEdges };
     return ok;
   }
 
+  // ---- Block spacing control ----
+
+  function applySpacing(val) {
+    spacing = clampSpacing(val);
+    try { localStorage.setItem(SPACING_KEY, String(spacing)); } catch { /* private mode etc. */ }
+    if (!dataLoaded) return;
+    const prevSelected = selectedId;
+    clearHover();
+    render(window.__scanData); // render() already fits-to-view internally
+    // render()/closeSelection() reset selection — reopen it (and its trace)
+    // the same way handleCardClick does, if the node survived the re-layout.
+    if (prevSelected && adj.byId[prevSelected]) {
+      selectedId = prevSelected;
+      detailPanelEl.innerHTML = detailPanelHtml(selectedId);
+      detailPanelEl.classList.add('open');
+      updateSelectionClasses();
+      const kind = adj.byId[selectedId].kind;
+      if (kind === 'entry' || kind === 'cron') startTrace(selectedId);
+    }
+  }
+
+  function wireSpacingControl() {
+    const slider = document.getElementById('spacing-slider');
+    const readout = document.getElementById('spacing-readout');
+    slider.value = spacing;
+    readout.textContent = spacing.toFixed(1) + '×';
+    let timer = null;
+    slider.addEventListener('input', () => {
+      const val = parseFloat(slider.value);
+      readout.textContent = val.toFixed(1) + '×';
+      clearTimeout(timer);
+      timer = setTimeout(() => applySpacing(val), 120);
+    });
+  }
+
   wireDropzone();
   wireCanvas();
+  wireSpacingControl();
   loadInitialData();
 </script>
 
