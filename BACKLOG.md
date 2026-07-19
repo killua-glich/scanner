@@ -45,6 +45,16 @@ _Goal: "use the scanner for project xy" → scan, viewer opens with fresh JSON_
 - [x] TICKET-17 — serve.sh: copy scan.json next to viewer, `python3 -m http.server` on free port, `open` browser at viewer URL; idempotent re-runs
 - [x] TICKET-18 — End-to-end skill test: scan → validate → serve.sh → viewer verified on blinkergate scan.json (10 nodes, self-check green)
 
+## M6: Post-publish improvements
+_Status: Complete_
+_Goal: Sharing-driven polish after the GitHub release_
+
+- [x] TICKET-19 — Cross-platform serve.py replaces serve.sh; MIT license; independently rewritten scan prompt (history squashed for clean publish)
+- [x] TICKET-20 — Obstacle-avoiding edge routing (grid Dijkstra, corridors + channels); self-check guard against edge-card crossings
+- [x] TICKET-21 — Adjustable block spacing slider (0.8–2.5×, persisted, ?spacing= param); fixed latent float-drift router bug
+- [x] TICKET-22 — Clickable edges with edge detail panel (kind badge, label, jump to endpoints)
+- [x] TICKET-23 — Scan modes: standard vs full; full adds capped code snippets (≤600 chars/≤12 lines) rendered in detail panel; skill asks for mode when unspecified
+
 ## Ideas
 
 - [ ] Draw-in animation on first load (staggered edges, foglamp-style)
