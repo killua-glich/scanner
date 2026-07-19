@@ -1,0 +1,123 @@
+{
+  "version": 1,
+  "project": {
+    "name": "HelpFlow",
+    "slug": "helpflow",
+    "tagline": "AI support desk that triages, answers, and escalates tickets",
+    "iconDomain": "helpflowhq.com",
+    "date": "2026-07-19"
+  },
+  "stats": { "agents": 4, "models": 3, "tools": 3, "integrations": 3 },
+  "topModels": [
+    { "id": "gpt4o", "label": "GPT-4o", "domain": "openai.com" },
+    { "id": "claude-sonnet", "label": "Claude Sonnet", "domain": "claude.ai" },
+    { "id": "embed-model", "label": "text-embedding-3", "domain": "openai.com" }
+  ],
+  "topTools": [
+    { "id": "kb-search-tool", "label": "KB search" },
+    { "id": "order-lookup-tool", "label": "Order lookup" },
+    { "id": "web-search-tool", "label": "Web search", "domain": "exa.ai" }
+  ],
+  "topIntegrations": [
+    { "id": "stripe", "label": "Stripe", "domain": "stripe.com" },
+    { "id": "sendgrid", "label": "SendGrid", "domain": "sendgrid.com" },
+    { "id": "slack-api", "label": "Slack API", "domain": "slack.com" }
+  ],
+  "graph": {
+    "nodes": [
+      { "id": "dashboard-chat", "label": "Dashboard chat", "kind": "entry", "sub": "/api/chat" },
+      { "id": "email-webhook", "label": "Email intake", "kind": "entry", "sub": "/webhooks/email" },
+      { "id": "slack-webhook", "label": "Slack intake", "kind": "entry", "sub": "/webhooks/slack" },
+
+      { "id": "digest-cron", "label": "Daily digest job", "kind": "cron", "sub": "02:00 nightly" },
+      { "id": "reindex-cron", "label": "KB reindex job", "kind": "cron", "sub": "hourly" },
+
+      { "id": "triage-agent", "label": "Triage agent", "kind": "agent", "sub": "generateObject",
+        "sourceRef": "src/agents/triage.ts:18",
+        "detail": "Classifies incoming tickets by intent and urgency, opens a ticket record.",
+        "group": "Support pipeline" },
+      { "id": "support-agent", "label": "Support agent", "kind": "agent", "sub": "streamText",
+        "sourceRef": "src/agents/support.ts:42",
+        "detail": "Answers tickets with KB search and order lookups; escalates on low confidence.",
+        "group": "Support pipeline" },
+      { "id": "escalation-agent", "label": "Escalation agent", "kind": "agent", "sub": "generateText",
+        "sourceRef": "src/agents/escalation.ts:12",
+        "detail": "Decides severity and pages the on-call human when the bot can't resolve it.",
+        "group": "Support pipeline" },
+      { "id": "summarizer-agent", "label": "Digest agent", "kind": "agent", "sub": "generateText",
+        "sourceRef": "src/agents/digest.ts:9",
+        "detail": "Summarizes the day's tickets into a digest for the team channel." },
+
+      { "id": "gpt4o", "label": "GPT-4o", "kind": "model", "sub": "chat completions", "domain": "openai.com" },
+      { "id": "claude-sonnet", "label": "Claude Sonnet", "kind": "model", "sub": "reasoning tasks", "domain": "claude.ai" },
+      { "id": "embed-model", "label": "text-embedding-3", "kind": "model", "sub": "embeddings", "domain": "openai.com" },
+
+      { "id": "order-lookup-tool", "label": "Order lookup", "kind": "tool", "sub": "internal function",
+        "sourceRef": "src/tools/orders.ts" },
+      { "id": "kb-search-tool", "label": "KB search", "kind": "tool", "sub": "vector query",
+        "sourceRef": "src/tools/kb-search.ts" },
+      { "id": "web-search-tool", "label": "Web search", "kind": "tool", "sub": "Exa search", "domain": "exa.ai" },
+
+      { "id": "billing-service", "label": "Billing service", "kind": "service", "sub": "Stripe billing",
+        "sourceRef": "src/services/billing.ts",
+        "detail": "Owns subscription state and charges Stripe on trial end and renewals.",
+        "group": "Billing" },
+      { "id": "ticket-service", "label": "Ticket service", "kind": "service", "sub": "ticket CRUD",
+        "sourceRef": "src/services/tickets.ts",
+        "detail": "Creates and updates ticket records as agents work a conversation." },
+      { "id": "notification-service", "label": "Notification service", "kind": "service", "sub": "alerts + digest",
+        "sourceRef": "src/services/notify.ts",
+        "group": "Support pipeline" },
+      { "id": "auth-service", "label": "Auth service", "kind": "service", "sub": "session + SSO",
+        "sourceRef": "src/services/auth.ts" },
+
+      { "id": "postgres", "label": "Postgres", "kind": "store", "sub": "primary DB", "domain": "postgresql.org" },
+      { "id": "redis-cache", "label": "Redis", "kind": "store", "sub": "session cache", "domain": "redis.io" },
+      { "id": "vector-index", "label": "Vector index", "kind": "store", "sub": "KB embeddings", "domain": "pinecone.io" },
+
+      { "id": "stripe", "label": "Stripe", "kind": "external", "sub": "payments", "domain": "stripe.com",
+        "group": "Billing" },
+      { "id": "sendgrid", "label": "SendGrid", "kind": "external", "sub": "transactional email", "domain": "sendgrid.com",
+        "group": "Billing" },
+      { "id": "slack-api", "label": "Slack API", "kind": "external", "sub": "team notifications", "domain": "slack.com" }
+    ],
+    "edges": [
+      { "from": "dashboard-chat", "to": "auth-service", "kind": "calls" },
+      { "from": "slack-webhook", "to": "auth-service", "kind": "calls" },
+      { "from": "dashboard-chat", "to": "triage-agent", "kind": "triggers" },
+      { "from": "email-webhook", "to": "triage-agent", "kind": "triggers" },
+      { "from": "slack-webhook", "to": "triage-agent", "kind": "triggers" },
+      { "from": "digest-cron", "to": "summarizer-agent", "kind": "triggers" },
+      { "from": "reindex-cron", "to": "embed-model", "kind": "calls", "label": "re-embeds KB nightly" },
+      { "from": "embed-model", "to": "vector-index", "kind": "writes" },
+      { "from": "triage-agent", "to": "gpt4o", "kind": "calls" },
+      { "from": "triage-agent", "to": "ticket-service", "kind": "calls", "label": "creates ticket" },
+      { "from": "triage-agent", "to": "support-agent", "kind": "triggers", "label": "routes ticket" },
+      { "from": "support-agent", "to": "claude-sonnet", "kind": "calls" },
+      { "from": "support-agent", "to": "kb-search-tool", "kind": "calls" },
+      { "from": "support-agent", "to": "order-lookup-tool", "kind": "calls" },
+      { "from": "support-agent", "to": "web-search-tool", "kind": "calls", "label": "checks status page" },
+      { "from": "support-agent", "to": "ticket-service", "kind": "writes", "label": "updates ticket status" },
+      { "from": "support-agent", "to": "escalation-agent", "kind": "triggers", "label": "low confidence answer" },
+      { "from": "escalation-agent", "to": "gpt4o", "kind": "calls" },
+      { "from": "escalation-agent", "to": "notification-service", "kind": "calls", "label": "pages on-call" },
+      { "from": "escalation-agent", "to": "ticket-service", "kind": "writes", "label": "flags for review" },
+      { "from": "kb-search-tool", "to": "vector-index", "kind": "reads" },
+      { "from": "order-lookup-tool", "to": "postgres", "kind": "reads", "label": "looks up order history" },
+      { "from": "ticket-service", "to": "postgres", "kind": "reads" },
+      { "from": "ticket-service", "to": "postgres", "kind": "writes", "label": "persists ticket record" },
+      { "from": "billing-service", "to": "stripe", "kind": "calls", "label": "charges on trial end" },
+      { "from": "billing-service", "to": "postgres", "kind": "writes", "label": "records invoice" },
+      { "from": "billing-service", "to": "sendgrid", "kind": "calls", "label": "emails receipt" },
+      { "from": "notification-service", "to": "sendgrid", "kind": "calls" },
+      { "from": "notification-service", "to": "slack-api", "kind": "calls", "label": "posts to #support" },
+      { "from": "auth-service", "to": "postgres", "kind": "reads", "label": "verifies user session" },
+      { "from": "auth-service", "to": "redis-cache", "kind": "reads" },
+      { "from": "auth-service", "to": "redis-cache", "kind": "writes", "label": "caches session token" },
+      { "from": "summarizer-agent", "to": "claude-sonnet", "kind": "calls" },
+      { "from": "summarizer-agent", "to": "kb-search-tool", "kind": "calls" },
+      { "from": "summarizer-agent", "to": "postgres", "kind": "reads", "label": "reads day's tickets" },
+      { "from": "summarizer-agent", "to": "notification-service", "kind": "calls", "label": "sends daily digest" }
+    ]
+  }
+}

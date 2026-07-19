@@ -1,0 +1,1206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codebase Scan Viewer</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9;
+    --fg: #1a1d23;
+    --muted: #6b7280;
+    --card-bg: #ffffff;
+    --card-border: #e2e4e9;
+    --card-shadow: 0 1px 2px rgba(16, 20, 30, 0.06);
+    --edge: #b8bcc6;
+    --edge-label-bg: #f6f7f9;
+    --group-border: #d7dae2;
+    --group-bg: rgba(0, 0, 0, 0.015);
+    --group-label: #8a8f9c;
+    --drop-border: #c6cad4;
+    --link: #3b82f6;
+
+    --accent-entry: #3b82f6;
+    --accent-cron: #f59e0b;
+    --accent-agent: #8b5cf6;
+    --accent-model: #06b6d4;
+    --accent-tool: #10b981;
+    --accent-service: #6366f1;
+    --accent-store: #ec4899;
+    --accent-external: #64748b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161b;
+      --fg: #e7e9ee;
+      --muted: #9096a3;
+      --card-bg: #1c1f26;
+      --card-border: #2b2f3a;
+      --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+      --edge: #454b59;
+      --edge-label-bg: #14161b;
+      --group-border: #333947;
+      --group-bg: rgba(255, 255, 255, 0.02);
+      --group-label: #7d8391;
+      --drop-border: #3a4050;
+      --link: #60a5fa;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  header {
+    padding: 20px 28px 16px;
+    border-bottom: 1px solid var(--card-border);
+    background: var(--card-bg);
+  }
+  header h1 {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+  }
+  header .tagline {
+    margin: 4px 0 0;
+    color: var(--muted);
+    font-size: 14px;
+  }
+  header .meta {
+    margin-top: 10px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 18px;
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+  header .meta strong { color: var(--fg); font-weight: 600; }
+
+  .top-lists {
+    margin-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .top-list-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px 8px;
+  }
+  .top-list-row .row-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--group-label);
+    margin-right: 2px;
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: var(--bg);
+    border: 1px solid var(--card-border);
+    font-size: 11.5px;
+    color: var(--muted);
+  }
+  .chip img {
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+  }
+
+  .legend {
+    margin-top: 12px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+  }
+  .legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11.5px;
+    color: var(--muted);
+  }
+  .legend-swatch {
+    width: 9px;
+    height: 9px;
+    border-radius: 2px;
+    flex: none;
+  }
+
+  main {
+    position: relative;
+    width: 100%;
+    height: calc(100vh - 128px);
+    overflow: hidden;
+    cursor: grab;
+  }
+  main.panning { cursor: grabbing; }
+
+  #stage {
+    position: relative;
+    transform-origin: top left;
+  }
+
+  svg#edges {
+    position: absolute;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+    overflow: visible;
+  }
+  svg#edges .edge { transition: opacity 0.15s ease; }
+  svg#edges path.edge-line {
+    fill: none;
+    stroke: var(--edge);
+    stroke-width: 1.4px;
+  }
+  svg#edges path.edge-arrow {
+    fill: var(--edge);
+    stroke: none;
+  }
+  svg#edges .edge-label-bg {
+    fill: var(--edge-label-bg);
+  }
+  svg#edges .edge-label-text {
+    fill: var(--muted);
+    font-size: 10.5px;
+    font-family: inherit;
+  }
+  svg#edges .edge-kind-label {
+    fill: var(--muted);
+    font-size: 9.5px;
+    font-family: inherit;
+    paint-order: stroke;
+    stroke: var(--bg);
+    stroke-width: 3px;
+    stroke-linejoin: round;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+  }
+  svg#edges .edge.hover-reveal .edge-kind-label,
+  svg#edges .edge.trace-reveal .edge-kind-label { opacity: 1; }
+
+  /* Flow trace: dash draw-in on traced edges, staggered by --trace-delay */
+  svg#edges .edge.trace-reveal path.edge-line {
+    stroke: var(--link);
+    stroke-dasharray: 1;
+    stroke-dashoffset: 1;
+    animation: edge-draw 0.5s ease forwards;
+    animation-delay: var(--trace-delay, 0s);
+  }
+  svg#edges .edge.trace-reveal path.edge-arrow { fill: var(--link); }
+  @keyframes edge-draw { to { stroke-dashoffset: 0; } }
+
+  .trace-dot {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 7px;
+    height: 7px;
+    margin: -3.5px 0 0 -3.5px;
+    border-radius: 50%;
+    background: var(--link);
+    box-shadow: 0 0 8px 2px var(--link);
+    offset-anchor: center;
+    animation: trace-ride 1.4s linear infinite;
+    animation-delay: var(--trace-delay, 0s);
+    pointer-events: none;
+  }
+  @keyframes trace-ride {
+    from { offset-distance: 0%; }
+    to { offset-distance: 100%; }
+  }
+
+  .group-box {
+    position: absolute;
+    border: 1px dashed var(--group-border);
+    background: var(--group-bg);
+    border-radius: 10px;
+  }
+  .group-box .group-label {
+    position: absolute;
+    top: -9px;
+    left: 12px;
+    padding: 0 6px;
+    background: var(--bg);
+    color: var(--group-label);
+    font-size: 10.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+
+  .card {
+    position: absolute;
+    width: 190px;
+    height: 64px;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-left: 3px solid var(--accent, var(--card-border));
+    border-radius: 8px;
+    box-shadow: var(--card-shadow);
+    padding: 8px 10px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: opacity 0.15s ease, outline-color 0.15s ease;
+  }
+  .card.selected {
+    outline: 2px solid var(--accent, var(--link));
+    outline-offset: 2px;
+  }
+  /* Hover / trace: dim everything except the revealed set */
+  #stage.hover-active .card:not(.hover-reveal),
+  #stage.hover-active svg#edges .edge:not(.hover-reveal),
+  #stage.trace-active .card:not(.trace-reveal),
+  #stage.trace-active svg#edges .edge:not(.trace-reveal) {
+    opacity: 0.25;
+  }
+  .card .icon {
+    flex: none;
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    background: color-mix(in srgb, var(--accent, var(--muted)) 14%, transparent);
+    color: var(--accent, var(--muted));
+  }
+  .card .icon img {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+  }
+  .card .text {
+    min-width: 0;
+    flex: 1;
+  }
+  .card .label {
+    font-size: 12.5px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .card .sub {
+    margin-top: 1px;
+    font-size: 11px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  #dropzone {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 14px;
+    background: var(--bg);
+    z-index: 50;
+  }
+  #dropzone.active { display: flex; }
+  #dropzone.dragover .drop-panel { border-color: var(--link); }
+  .drop-panel {
+    width: min(420px, 86vw);
+    padding: 40px 28px;
+    border: 2px dashed var(--drop-border);
+    border-radius: 14px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 14px;
+  }
+  .drop-panel strong { color: var(--fg); }
+  .drop-panel button {
+    margin-top: 14px;
+    padding: 8px 16px;
+    border-radius: 7px;
+    border: 1px solid var(--card-border);
+    background: var(--card-bg);
+    color: var(--fg);
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .drop-panel button:hover { border-color: var(--link); }
+  #file-input { display: none; }
+
+  #check-banner {
+    position: fixed;
+    bottom: 14px;
+    right: 14px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-family: ui-monospace, monospace;
+    z-index: 60;
+    display: none;
+  }
+  #check-banner.ok { display: block; background: #16a34a; color: #fff; }
+  #check-banner.fail { display: block; background: #dc2626; color: #fff; }
+
+  #detail-panel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    width: 300px;
+    max-width: 86vw;
+    height: 100vh;
+    background: var(--card-bg);
+    border-left: 1px solid var(--card-border);
+    box-shadow: -6px 0 20px rgba(16, 20, 30, 0.1);
+    transform: translateX(100%);
+    transition: transform 0.22s ease;
+    z-index: 55;
+    overflow-y: auto;
+    padding: 22px 20px;
+  }
+  #detail-panel.open { transform: translateX(0); }
+  .panel-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 8px; }
+  .panel-icon {
+    flex: none;
+    width: 30px;
+    height: 30px;
+    border-radius: 7px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 15px;
+    background: color-mix(in srgb, var(--accent, var(--muted)) 14%, transparent);
+    color: var(--accent, var(--muted));
+  }
+  .panel-label { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
+  .panel-badge {
+    display: inline-block;
+    margin-top: 5px;
+    padding: 1px 7px;
+    border-radius: 5px;
+    font-size: 10.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    background: color-mix(in srgb, var(--accent, var(--muted)) 16%, transparent);
+    color: var(--accent, var(--muted));
+  }
+  .panel-close {
+    margin-left: auto;
+    border: none;
+    background: none;
+    color: var(--muted);
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 2px 4px;
+  }
+  .panel-close:hover { color: var(--fg); }
+  .panel-sub { color: var(--muted); font-size: 12.5px; margin: 0 0 8px; }
+  .panel-detail { font-size: 13px; line-height: 1.5; margin: 10px 0; }
+  .panel-source {
+    font-family: ui-monospace, monospace;
+    font-size: 11.5px;
+    color: var(--muted);
+    background: var(--bg);
+    border: 1px solid var(--card-border);
+    border-radius: 6px;
+    padding: 6px 8px;
+    margin-bottom: 12px;
+    word-break: break-all;
+  }
+  .panel-section h4 {
+    margin: 16px 0 6px;
+    font-size: 10.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--group-label);
+  }
+  .conn-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+  .conn-item { font-size: 12.5px; padding: 5px 7px; border-radius: 6px; cursor: pointer; }
+  .conn-item:hover { background: var(--bg); }
+  .conn-kind { color: var(--muted); font-family: ui-monospace, monospace; font-size: 11px; }
+  .conn-empty { font-size: 12px; color: var(--muted); padding: 4px 7px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1 id="project-name">Codebase Scan</h1>
+  <p class="tagline" id="project-tagline"></p>
+  <div class="meta">
+    <span id="project-date"></span>
+    <span><strong id="stat-agents">0</strong> agents</span>
+    <span><strong id="stat-models">0</strong> models</span>
+    <span><strong id="stat-tools">0</strong> tools</span>
+    <span><strong id="stat-integrations">0</strong> integrations</span>
+  </div>
+  <div class="top-lists" id="top-lists"></div>
+  <div class="legend" id="legend"></div>
+</header>
+
+<main>
+  <div id="stage">
+    <svg id="edges"></svg>
+  </div>
+</main>
+
+<aside id="detail-panel"></aside>
+
+<div id="dropzone">
+  <div class="drop-panel">
+    <p><strong>No scan.json found.</strong><br>Drag a scan.json file anywhere on this page,
+      or choose one below.</p>
+    <button id="choose-file-btn" type="button">Choose file&hellip;</button>
+    <input id="file-input" type="file" accept="application/json,.json">
+  </div>
+</div>
+
+<div id="check-banner"></div>
+
+<script id="layout-lib">
+// Pure layout engine — no DOM access, so it can run standalone in Node (see check.js)
+// or inside the browser. layout(graph) -> { nodes: [{id,x,y,w,h}], groups: [...], size: {w,h} }
+
+const CARD_W = 190, CARD_H = 64, GAP_X = 48, GAP_Y = 90;
+const GROUP_PAD = 14, GROUP_HEADER = 22, STACK_GAP = 10;
+
+function findBackEdges(nodes, edges) {
+  const out = {};
+  nodes.forEach(n => (out[n.id] = []));
+  edges.forEach(e => { if (out[e.from]) out[e.from].push(e.to); });
+
+  const WHITE = 0, GRAY = 1, BLACK = 2;
+  const color = {};
+  nodes.forEach(n => (color[n.id] = WHITE));
+  const back = new Set();
+
+  function dfs(u) {
+    color[u] = GRAY;
+    for (const v of out[u] || []) {
+      if (color[v] === GRAY) back.add(u + '->' + v);
+      else if (color[v] === WHITE) dfs(v);
+    }
+    color[u] = BLACK;
+  }
+  nodes.forEach(n => { if (color[n.id] === WHITE) dfs(n.id); });
+  return back;
+}
+
+function assignLayers(nodes, edges, backEdges) {
+  const forward = edges.filter(e => !backEdges.has(e.from + '->' + e.to));
+  const outAdj = {}, indeg = {};
+  nodes.forEach(n => { outAdj[n.id] = []; indeg[n.id] = 0; });
+  forward.forEach(e => {
+    if (outAdj[e.from] && indeg[e.to] !== undefined) {
+      outAdj[e.from].push(e.to);
+      indeg[e.to]++;
+    }
+  });
+
+  const layer = {};
+  nodes.forEach(n => (layer[n.id] = 0));
+  const queue = nodes.filter(n => indeg[n.id] === 0).map(n => n.id);
+  const seen = new Set(queue);
+  while (queue.length) {
+    const u = queue.shift();
+    for (const v of outAdj[u]) {
+      layer[v] = Math.max(layer[v], layer[u] + 1);
+      indeg[v]--;
+      if (indeg[v] === 0 && !seen.has(v)) { seen.add(v); queue.push(v); }
+    }
+  }
+  return layer;
+}
+
+function layout(graph) {
+  const nodes = graph.nodes || [];
+  const edges = graph.edges || [];
+  if (!nodes.length) return { nodes: [], groups: [], size: { w: 0, h: 0 } };
+
+  const backEdges = findBackEdges(nodes, edges);
+  const layer = assignLayers(nodes, edges, backEdges);
+
+  // Group override: a group sits at the min layer of its members.
+  const groupLayer = {};
+  nodes.forEach(n => {
+    if (n.group) groupLayer[n.group] = groupLayer[n.group] === undefined
+      ? layer[n.id] : Math.min(groupLayer[n.group], layer[n.id]);
+  });
+  nodes.forEach(n => { if (n.group) layer[n.id] = groupLayer[n.group]; });
+
+  // Build layout units: one per ungrouped node, one per group (stack).
+  const units = {};
+  const unitOf = {};
+  nodes.forEach(n => {
+    if (n.group) {
+      const gid = 'group:' + n.group;
+      if (!units[gid]) units[gid] = { id: gid, isGroup: true, group: n.group, layer: layer[n.id], members: [] };
+      units[gid].members.push(n.id);
+      unitOf[n.id] = gid;
+    } else {
+      const uid = 'node:' + n.id;
+      units[uid] = { id: uid, isGroup: false, layer: layer[n.id], members: [n.id] };
+      unitOf[n.id] = uid;
+    }
+  });
+
+  const maxLayer = Math.max(...Object.values(layer));
+  const layersArr = [];
+  for (let i = 0; i <= maxLayer; i++) layersArr.push([]);
+  const placedUnits = new Set();
+  nodes.forEach(n => {
+    const uid = unitOf[n.id];
+    if (!placedUnits.has(uid)) { placedUnits.add(uid); layersArr[units[uid].layer].push(uid); }
+  });
+
+  // Barycenter ordering: a few down/up sweeps against already-ordered neighbor layers.
+  const unitEdges = edges
+    .map(e => ({ u: unitOf[e.from], v: unitOf[e.to] }))
+    .filter(e => e.u && e.v && e.u !== e.v);
+
+  function reorder(li, refLi, wantSuccessors) {
+    const refPos = {};
+    layersArr[refLi].forEach((id, i) => (refPos[id] = i));
+    const origIndex = {};
+    layersArr[li].forEach((id, i) => (origIndex[id] = i));
+    const scored = layersArr[li].map(uid => {
+      const neigh = unitEdges.filter(e => wantSuccessors
+        ? (e.u === uid && refPos[e.v] !== undefined)
+        : (e.v === uid && refPos[e.u] !== undefined));
+      const positions = neigh.map(e => refPos[wantSuccessors ? e.v : e.u]);
+      const bary = positions.length ? positions.reduce((a, b) => a + b, 0) / positions.length : origIndex[uid];
+      return { uid, bary, orig: origIndex[uid] };
+    });
+    scored.sort((a, b) => a.bary - b.bary || a.orig - b.orig);
+    layersArr[li] = scored.map(s => s.uid);
+  }
+  for (let sweep = 0; sweep < 3; sweep++) {
+    if (sweep % 2 === 0) for (let li = 1; li < layersArr.length; li++) reorder(li, li - 1, false);
+    else for (let li = layersArr.length - 2; li >= 0; li--) reorder(li, li + 1, true);
+  }
+
+  // Geometry: fixed card width, group stacks grow vertically; rows sized to tallest unit.
+  function unitHeight(u) {
+    return u.isGroup
+      ? GROUP_HEADER + u.members.length * CARD_H + (u.members.length - 1) * STACK_GAP + 2 * GROUP_PAD
+      : CARD_H;
+  }
+  function unitWidth(u) { return u.isGroup ? CARD_W + 2 * GROUP_PAD : CARD_W; }
+
+  const rowHeights = layersArr.map(row => Math.max(...row.map(uid => unitHeight(units[uid]))));
+  const rowWidths = layersArr.map(row => {
+    const sum = row.reduce((s, uid) => s + unitWidth(units[uid]), 0);
+    return sum + Math.max(0, row.length - 1) * GAP_X;
+  });
+  const maxRowWidth = Math.max(0, ...rowWidths);
+
+  const positioned = [];
+  const groupBoxes = [];
+  let y = 0;
+  layersArr.forEach((row, li) => {
+    let x = (maxRowWidth - rowWidths[li]) / 2;
+    row.forEach(uid => {
+      const u = units[uid];
+      const uw = unitWidth(u), uh = unitHeight(u);
+      const uy = y + (rowHeights[li] - uh) / 2;
+      if (!u.isGroup) {
+        positioned.push({ id: u.members[0], x, y: uy, w: CARD_W, h: CARD_H });
+      } else {
+        groupBoxes.push({ group: u.group, x, y: uy, w: uw, h: uh });
+        let my = uy + GROUP_PAD + GROUP_HEADER;
+        u.members.forEach(nodeId => {
+          positioned.push({ id: nodeId, x: x + GROUP_PAD, y: my, w: CARD_W, h: CARD_H });
+          my += CARD_H + STACK_GAP;
+        });
+      }
+      x += uw + GAP_X;
+    });
+    y += rowHeights[li] + GAP_Y;
+  });
+
+  return { nodes: positioned, groups: groupBoxes, size: { w: maxRowWidth, h: Math.max(0, y - GAP_Y) }, backEdges: [...backEdges] };
+}
+
+if (typeof module !== 'undefined') module.exports = { layout };
+</script>
+
+<script>
+  const KIND_GLYPH = {
+    entry: '⇥', cron: '⏱', agent: '✳', model: '◇',
+    tool: '⚒', service: '▣', store: '⛁', external: '↗',
+  };
+  const KIND_LABEL = {
+    entry: 'Entry', cron: 'Cron', agent: 'Agent', model: 'Model',
+    tool: 'Tool', service: 'Service', store: 'Store', external: 'External',
+  };
+  const KIND_ORDER = ['entry', 'cron', 'agent', 'model', 'tool', 'service', 'store', 'external'];
+
+  // DOM anchors queried once — render() only ever replaces their innerHTML,
+  // so listeners bound to these survive across re-renders (drag in a new file).
+  const mainEl = document.querySelector('main');
+  const stageEl = document.getElementById('stage');
+  const dropzoneEl = document.getElementById('dropzone');
+  const detailPanelEl = document.getElementById('detail-panel');
+
+  // Pan/zoom + selection/hover/trace state, rebuilt or reset on each render().
+  let view = { tx: 0, ty: 0, s: 1 };
+  let dataLoaded = false;
+  let adj = { byId: {}, out: {}, inc: {} };
+  let posById = {};
+  let cardEls = {};
+  let edgeEls = {};
+  let selectedId = null;
+  let hoveredId = null;
+  let tracedId = null;
+  let dragDepth = 0;
+
+  function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
+  }
+
+  function renderHeader(data) {
+    const p = data.project || {};
+    document.title = (p.name || 'Codebase Scan') + ' — Scan Viewer';
+    document.getElementById('project-name').textContent = p.name || 'Codebase Scan';
+    document.getElementById('project-tagline').textContent = p.tagline || '';
+    document.getElementById('project-date').textContent = p.date || '';
+    const s = data.stats || {};
+    document.getElementById('stat-agents').textContent = s.agents ?? 0;
+    document.getElementById('stat-models').textContent = s.models ?? 0;
+    document.getElementById('stat-tools').textContent = s.tools ?? 0;
+    document.getElementById('stat-integrations').textContent = s.integrations ?? 0;
+
+    const legend = document.getElementById('legend');
+    legend.innerHTML = KIND_ORDER.map(k => `
+      <span class="legend-item">
+        <span class="legend-swatch" style="background:var(--accent-${k})"></span>${KIND_LABEL[k]}
+      </span>`).join('');
+
+    document.getElementById('top-lists').innerHTML = [
+      topListRowHtml('Models', data.topModels),
+      topListRowHtml('Tools', data.topTools),
+      topListRowHtml('Integrations', data.topIntegrations),
+    ].join('');
+  }
+
+  function chipHtml(item) {
+    const icon = item.domain
+      ? `<img src="https://www.google.com/s2/favicons?domain=${encodeURIComponent(item.domain)}&sz=64"
+             onerror="this.remove()">`
+      : '';
+    return `<span class="chip">${icon}${escapeHtml(item.label)}</span>`;
+  }
+
+  function topListRowHtml(label, items) {
+    if (!items || !items.length) return '';
+    return `
+      <div class="top-list-row">
+        <span class="row-label">${escapeHtml(label)}</span>
+        ${items.map(chipHtml).join('')}
+      </div>`;
+  }
+
+  function cardHtml(node) {
+    const domain = node.domain;
+    const glyph = KIND_GLYPH[node.kind] || '•';
+    const icon = domain
+      ? `<img src="https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=64"
+             onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'${glyph}'}))">`
+      : glyph;
+    return `
+      <div class="card" style="left:${node._x}px;top:${node._y}px;--accent:var(--accent-${node.kind})"
+           data-id="${escapeHtml(node.id)}" data-kind="${escapeHtml(node.kind)}">
+        <span class="icon">${icon}</span>
+        <span class="text">
+          <div class="label" title="${escapeHtml(node.label)}">${escapeHtml(node.label)}</div>
+          ${node.sub ? `<div class="sub" title="${escapeHtml(node.sub)}">${escapeHtml(node.sub)}</div>` : ''}
+        </span>
+      </div>`;
+  }
+
+  function groupBoxHtml(box) {
+    return `
+      <div class="group-box" style="left:${box.x}px;top:${box.y}px;width:${box.w}px;height:${box.h}px">
+        <span class="group-label">${escapeHtml(box.group)}</span>
+      </div>`;
+  }
+
+  // Orthogonal edge path: straight when aligned, else vertical-out / horizontal jog / vertical-in.
+  function orthPath(x1, y1, x2, y2) {
+    if (Math.abs(x1 - x2) < 1) return { d: `M${x1},${y1} L${x2},${y2}`, dir: y2 >= y1 ? 1 : -1 };
+    const midY = (y1 + y2) / 2;
+    const dir = y2 >= y1 ? 1 : -1;
+    const dirX = x2 > x1 ? 1 : -1;
+    const r = Math.max(2, Math.min(14, Math.abs(midY - y1), Math.abs(x2 - x1) / 2));
+    const d = `M${x1},${y1} L${x1},${midY - dir * r} Q${x1},${midY} ${x1 + dirX * r},${midY}` +
+      ` L${x2 - dirX * r},${midY} Q${x2},${midY} ${x2},${midY + dir * r} L${x2},${y2}`;
+    return { d, dir };
+  }
+
+  function arrowPath(x, y, dir) {
+    const s = 5;
+    return `M${x - s},${y - dir * s} L${x},${y} L${x + s},${y - dir * s} Z`;
+  }
+
+  function edgeAnchors(a, b) {
+    const aCx = a._x + a.w / 2, bCx = b._x + b.w / 2;
+    const down = (b._y + b.h / 2) >= (a._y + a.h / 2);
+    const y1 = down ? a._y + a.h : a._y;
+    const y2 = down ? b._y : b._y + b.h;
+    return { x1: aCx, y1, x2: bCx, y2 };
+  }
+
+  // edgeMeta[i] mirrors graph.edges[i]: { from, to, kind, d } — index-aligned so
+  // hover/trace can look up an edge's <g> wrapper and path data by the same
+  // index used in adjacency lists (parallel from/to edges can differ only by kind).
+  let edgeMeta = [];
+
+  function renderEdges(edges, byId) {
+    const svg = document.getElementById('edges');
+    const parts = [];
+    edgeMeta = [];
+    edges.forEach((e, idx) => {
+      const a = byId[e.from], b = byId[e.to];
+      if (!a || !b) { edgeMeta.push(null); return; }
+      const { x1, y1, x2, y2 } = edgeAnchors(a, b);
+      const { d, dir } = orthPath(x1, y1, x2, y2);
+      edgeMeta.push({ from: e.from, to: e.to, kind: e.kind, d });
+      const midY = (y1 + y2) / 2;
+      const midX = (x1 + x2) / 2;
+      parts.push(`
+        <g class="edge" data-idx="${idx}" data-from="${escapeHtml(e.from)}" data-to="${escapeHtml(e.to)}" data-kind="${escapeHtml(e.kind || '')}">
+          <path class="edge-line" pathLength="1" d="${d}"></path>
+          <path class="edge-arrow" d="${arrowPath(x2, y2, dir)}"></path>
+          <text class="edge-kind-label" x="${midX}" y="${midY - 12}" text-anchor="middle">${escapeHtml(e.kind || '')}</text>`);
+      if (e.label) {
+        const w = Math.max(24, e.label.length * 6 + 10);
+        parts.push(`
+          <rect class="edge-label-bg" x="${midX - w / 2}" y="${midY - 9}" width="${w}" height="16" rx="4"></rect>
+          <text class="edge-label-text" x="${midX}" y="${midY + 3}" text-anchor="middle">${escapeHtml(e.label)}</text>`);
+      }
+      parts.push(`</g>`);
+    });
+    svg.innerHTML = parts.join('');
+  }
+
+  function fitState(size, viewportW, viewportH) {
+    if (!size.w || !size.h) return { tx: 0, ty: 0, s: 1 };
+    const pad = 60;
+    const scale = Math.min(1, (viewportW - pad) / size.w, (viewportH - pad) / size.h);
+    const s = Math.max(0.15, scale);
+    return { tx: pad / 2, ty: pad / 2, s };
+  }
+
+  function applyStageTransform() {
+    stageEl.style.transform = `translate(${view.tx}px, ${view.ty}px) scale(${view.s})`;
+  }
+
+  function fitToView() {
+    const result = window.__layoutResult;
+    if (!result) return;
+    view = fitState(result.size, mainEl.clientWidth, mainEl.clientHeight);
+    applyStageTransform();
+  }
+
+  function render(data) {
+    hideDropzone();
+    dataLoaded = true;
+    closeSelection();
+    renderHeader(data);
+    const graph = data.graph || { nodes: [], edges: [] };
+    const result = layout(graph);
+
+    const byId = {};
+    result.nodes.forEach(n => { byId[n.id] = { ...n, _x: n.x, _y: n.y }; });
+    const nodeById = {};
+    graph.nodes.forEach(n => (nodeById[n.id] = n));
+
+    const cardsHtml = result.nodes.map(pos => cardHtml({ ...nodeById[pos.id], _x: pos.x, _y: pos.y })).join('');
+    const groupsHtml = result.groups.map(groupBoxHtml).join('');
+
+    stageEl.style.width = result.size.w + 'px';
+    stageEl.style.height = result.size.h + 'px';
+    stageEl.innerHTML = `<svg id="edges" width="${result.size.w}" height="${result.size.h}"></svg>${groupsHtml}${cardsHtml}`;
+
+    renderEdges(graph.edges || [], byId);
+
+    // Rebuild interaction lookup tables against the fresh DOM/graph.
+    adj = buildAdjacency(graph);
+    posById = byId;
+    cardEls = {};
+    stageEl.querySelectorAll('.card').forEach(el => (cardEls[el.dataset.id] = el));
+    edgeEls = {};
+    stageEl.querySelectorAll('#edges .edge').forEach(el => (edgeEls[+el.dataset.idx] = el));
+
+    window.__scanData = data;
+    window.__layoutResult = result;
+    fitToView();
+    runSelfCheck(data, result);
+  }
+
+  // ---- Adjacency: shared by detail-panel connections, hover highlight, flow trace ----
+  // Each entry carries the original graph.edges index (`idx`) so parallel
+  // edges between the same from/to pair (different kind) stay distinguishable.
+
+  function buildAdjacency(graph) {
+    const byId = {};
+    graph.nodes.forEach(n => (byId[n.id] = n));
+    const out = {}, inc = {};
+    graph.nodes.forEach(n => { out[n.id] = []; inc[n.id] = []; });
+    (graph.edges || []).forEach((e, idx) => {
+      const withIdx = { from: e.from, to: e.to, kind: e.kind, idx };
+      if (out[e.from]) out[e.from].push(withIdx);
+      if (inc[e.to]) inc[e.to].push(withIdx);
+    });
+    return { byId, out, inc };
+  }
+
+  // ---- Selection + detail panel (TICKET-09) ----
+
+  function updateSelectionClasses() {
+    Object.values(cardEls).forEach(el => el.classList.remove('selected'));
+    if (selectedId && cardEls[selectedId]) cardEls[selectedId].classList.add('selected');
+  }
+
+  function connHtml(list, otherKey) {
+    if (!list.length) return '<li class="conn-empty">None</li>';
+    return list.map(e => {
+      const other = adj.byId[e[otherKey]];
+      return `<li class="conn-item" data-jump="${escapeHtml(e[otherKey])}">
+        <span class="conn-kind">${escapeHtml(e.kind || '')}</span> → ${escapeHtml(other ? other.label : e[otherKey])}
+      </li>`;
+    }).join('');
+  }
+
+  function detailPanelHtml(id) {
+    const node = adj.byId[id];
+    if (!node) return '';
+    const glyph = KIND_GLYPH[node.kind] || '•';
+    return `
+      <div style="--accent:var(--accent-${node.kind})">
+        <div class="panel-head">
+          <span class="panel-icon">${glyph}</span>
+          <div>
+            <div class="panel-label">${escapeHtml(node.label)}</div>
+            <span class="panel-badge">${escapeHtml(KIND_LABEL[node.kind] || node.kind)}</span>
+          </div>
+          <button class="panel-close" type="button" aria-label="Close">&times;</button>
+        </div>
+        ${node.sub ? `<p class="panel-sub">${escapeHtml(node.sub)}</p>` : ''}
+        ${node.detail ? `<p class="panel-detail">${escapeHtml(node.detail)}</p>` : ''}
+        ${node.sourceRef ? `<div class="panel-source">${escapeHtml(node.sourceRef)}</div>` : ''}
+        <div class="panel-section">
+          <h4>Incoming</h4>
+          <ul class="conn-list">${connHtml(adj.inc[id] || [], 'from')}</ul>
+        </div>
+        <div class="panel-section">
+          <h4>Outgoing</h4>
+          <ul class="conn-list">${connHtml(adj.out[id] || [], 'to')}</ul>
+        </div>
+      </div>`;
+  }
+
+  function centerOn(id) {
+    const pos = posById[id];
+    if (!pos) return;
+    view.tx = mainEl.clientWidth / 2 - (pos.x + pos.w / 2) * view.s;
+    view.ty = mainEl.clientHeight / 2 - (pos.y + pos.h / 2) * view.s;
+    applyStageTransform();
+  }
+
+  function handleCardClick(id, kind) {
+    if (selectedId === id) { closeSelection(); return; }
+    selectedId = id;
+    detailPanelEl.innerHTML = detailPanelHtml(id);
+    detailPanelEl.classList.add('open');
+    updateSelectionClasses();
+    if (kind === 'entry' || kind === 'cron') startTrace(id);
+    else clearTrace();
+  }
+
+  function closeSelection() {
+    selectedId = null;
+    detailPanelEl.classList.remove('open');
+    updateSelectionClasses();
+    clearTrace();
+  }
+
+  // ---- Hover highlight (TICKET-10) ----
+
+  function setHover(id) {
+    hoveredId = id;
+    stageEl.classList.add('hover-active');
+    document.querySelectorAll('.hover-reveal').forEach(el => el.classList.remove('hover-reveal'));
+    const reveal = new Set([id]);
+    [...(adj.out[id] || []), ...(adj.inc[id] || [])].forEach(e => {
+      reveal.add(e.from);
+      reveal.add(e.to);
+      const g = edgeEls[e.idx];
+      if (g) g.classList.add('hover-reveal');
+    });
+    reveal.forEach(nid => { if (cardEls[nid]) cardEls[nid].classList.add('hover-reveal'); });
+  }
+
+  function clearHover() {
+    hoveredId = null;
+    stageEl.classList.remove('hover-active');
+    document.querySelectorAll('.hover-reveal').forEach(el => el.classList.remove('hover-reveal'));
+  }
+
+  // ---- Flow trace (TICKET-11): BFS downstream from an entry/cron node ----
+
+  function bfsDownstream(startId) {
+    const depth = { [startId]: 0 };
+    const edges = [];
+    const seenIdx = new Set();
+    const queue = [startId];
+    while (queue.length) {
+      const u = queue.shift();
+      for (const e of adj.out[u] || []) {
+        if (seenIdx.has(e.idx)) continue;
+        seenIdx.add(e.idx);
+        edges.push(e);
+        if (!(e.to in depth)) { depth[e.to] = depth[u] + 1; queue.push(e.to); }
+      }
+    }
+    return { depth, edges };
+  }
+
+  function startTrace(id) {
+    clearTrace();
+    tracedId = id;
+    const { depth, edges } = bfsDownstream(id);
+    stageEl.classList.add('trace-active');
+    Object.keys(depth).forEach(nid => { if (cardEls[nid]) cardEls[nid].classList.add('trace-reveal'); });
+    const dots = [];
+    edges.forEach(e => {
+      const g = edgeEls[e.idx];
+      const meta = edgeMeta[e.idx];
+      if (!g || !meta) return;
+      const delay = (depth[e.from] || 0) * 0.15 + 's';
+      g.classList.add('trace-reveal');
+      g.style.setProperty('--trace-delay', delay);
+      dots.push(`<div class="trace-dot" style="offset-path:path('${meta.d}');--trace-delay:${delay}"></div>`);
+    });
+    stageEl.insertAdjacentHTML('beforeend', dots.join(''));
+  }
+
+  function clearTrace() {
+    if (!tracedId) return;
+    tracedId = null;
+    stageEl.classList.remove('trace-active');
+    stageEl.querySelectorAll('.trace-dot').forEach(el => el.remove());
+    stageEl.querySelectorAll('.trace-reveal').forEach(el => {
+      el.classList.remove('trace-reveal');
+      el.style.removeProperty('--trace-delay');
+    });
+  }
+
+  // ---- Pan/zoom + click/hover wiring (bound once; #stage/#main persist across re-render) ----
+
+  function wireCanvas() {
+    let panPointer = null;
+
+    mainEl.addEventListener('pointerdown', e => {
+      if (e.button !== 0 || e.target.closest('.card')) return;
+      panPointer = { id: e.pointerId, x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty, moved: false };
+      mainEl.setPointerCapture(e.pointerId);
+      mainEl.classList.add('panning');
+    });
+    mainEl.addEventListener('pointermove', e => {
+      if (!panPointer || e.pointerId !== panPointer.id) return;
+      const dx = e.clientX - panPointer.x, dy = e.clientY - panPointer.y;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) panPointer.moved = true;
+      view.tx = panPointer.tx + dx;
+      view.ty = panPointer.ty + dy;
+      applyStageTransform();
+    });
+    function endPan(e) {
+      if (!panPointer || e.pointerId !== panPointer.id) return;
+      mainEl.classList.remove('panning');
+      try { mainEl.releasePointerCapture(panPointer.id); } catch { /* already released */ }
+      const wasDrag = panPointer.moved;
+      panPointer = null;
+      if (!wasDrag) closeSelection();
+    }
+    mainEl.addEventListener('pointerup', endPan);
+    mainEl.addEventListener('pointercancel', endPan);
+
+    mainEl.addEventListener('dblclick', e => {
+      if (e.target.closest('.card')) return;
+      fitToView();
+    });
+
+    mainEl.addEventListener('wheel', e => {
+      e.preventDefault();
+      const rect = mainEl.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      const factor = Math.exp(-e.deltaY * 0.0015);
+      const newS = Math.min(2.5, Math.max(0.2, view.s * factor));
+      const stageX = (mx - view.tx) / view.s, stageY = (my - view.ty) / view.s;
+      view.tx = mx - stageX * newS;
+      view.ty = my - stageY * newS;
+      view.s = newS;
+      applyStageTransform();
+    }, { passive: false });
+
+    stageEl.addEventListener('click', e => {
+      const card = e.target.closest('.card');
+      if (card) handleCardClick(card.dataset.id, card.dataset.kind);
+    });
+    stageEl.addEventListener('pointerover', e => {
+      const card = e.target.closest('.card');
+      const id = card ? card.dataset.id : null;
+      if (id === hoveredId) return;
+      if (id) setHover(id); else clearHover();
+    });
+    stageEl.addEventListener('pointerout', e => {
+      const toCard = e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('.card');
+      if (!toCard && hoveredId) clearHover();
+    });
+
+    detailPanelEl.addEventListener('click', e => {
+      if (e.target.closest('.panel-close')) { closeSelection(); return; }
+      const item = e.target.closest('.conn-item');
+      if (!item || !item.dataset.jump) return;
+      const jumpId = item.dataset.jump;
+      const jumpNode = adj.byId[jumpId];
+      handleCardClick(jumpId, jumpNode && jumpNode.kind);
+      centerOn(jumpId);
+    });
+
+    document.addEventListener('keydown', e => {
+      if (e.key !== 'Escape') return;
+      closeSelection();
+      if (dataLoaded) { dragDepth = 0; dropzoneEl.classList.remove('active', 'dragover'); }
+    });
+  }
+
+  // ---- Data loading: scan.json, then sample/scan.json, then drag-and-drop / file picker ----
+
+  function showDropzone() { dropzoneEl.classList.add('active'); }
+  function hideDropzone() { dropzoneEl.classList.remove('active'); }
+
+  function tryFetch(url) {
+    return fetch(url).then(r => (r.ok ? r.json() : Promise.reject(new Error(url + ': ' + r.status))));
+  }
+
+  function loadInitialData() {
+    const src = new URLSearchParams(window.location.search).get('src');
+    let chain = tryFetch('scan.json').catch(() => tryFetch('sample/scan.json'));
+    if (src) chain = tryFetch(src).catch(() => chain);
+    chain.then(render).catch(() => showDropzone());
+  }
+
+  function readFile(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try { render(JSON.parse(reader.result)); }
+      catch (err) { alert('Could not parse that file as JSON: ' + err.message); }
+    };
+    reader.readAsText(file);
+  }
+
+  // BUGFIX: dragenter/dragleave fire once per element boundary crossed, so a
+  // naive `e.target === dz` dragleave check misses most crossings and leaves
+  // the overlay stuck ('active' never cleared) on an aborted drag once data is
+  // loaded. Track enter/leave depth instead: only truly "left" at depth 0.
+  // When no data is loaded the overlay is the permanent empty-state prompt —
+  // dragging over it should never hide it, only toggle the 'dragover' highlight.
+  function wireDropzone() {
+    const input = document.getElementById('file-input');
+    document.getElementById('choose-file-btn').addEventListener('click', () => input.click());
+    input.addEventListener('change', () => { if (input.files[0]) readFile(input.files[0]); });
+
+    document.addEventListener('dragenter', e => {
+      e.preventDefault();
+      dragDepth++;
+      dropzoneEl.classList.add('active', 'dragover');
+    });
+    document.addEventListener('dragover', e => e.preventDefault());
+    document.addEventListener('dragleave', e => {
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) {
+        dropzoneEl.classList.remove('dragover');
+        if (dataLoaded) dropzoneEl.classList.remove('active');
+      }
+    });
+    document.addEventListener('drop', e => {
+      e.preventDefault();
+      dragDepth = 0;
+      dropzoneEl.classList.remove('dragover');
+      if (dataLoaded) dropzoneEl.classList.remove('active');
+      const file = e.dataTransfer.files[0];
+      if (file) readFile(file);
+    });
+  }
+
+  // ---- Dev-only self-check: cheap invariants on the layout output ----
+
+  function runSelfCheck(data, result) {
+    const checked = window.location.search.includes('check');
+    const fails = [];
+    const graph = data.graph || { nodes: [], edges: [] };
+    const ids = new Set(graph.nodes.map(n => n.id));
+    const posById = {};
+    result.nodes.forEach(n => (posById[n.id] = n));
+
+    graph.nodes.forEach(n => {
+      const p = posById[n.id];
+      if (!p) fails.push(`node ${n.id}: missing coordinates`);
+      else if ([p.x, p.y, p.w, p.h].some(v => Number.isNaN(v))) fails.push(`node ${n.id}: NaN in geometry`);
+    });
+
+    const placed = result.nodes;
+    for (let i = 0; i < placed.length; i++) {
+      for (let j = i + 1; j < placed.length; j++) {
+        const a = placed[i], b = placed[j];
+        const overlap = a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+        if (overlap) fails.push(`cards overlap: ${a.id} / ${b.id}`);
+      }
+    }
+
+    (graph.edges || []).forEach(e => {
+      if (!posById[e.from] || !posById[e.to]) fails.push(`edge ${e.from}->${e.to}: dangling reference`);
+    });
+
+    if (!ids.size) { /* empty graph is trivially fine */ }
+
+    const ok = fails.length === 0;
+    console[ok ? 'log' : 'error'](`[self-check] ${ok ? 'passed' : 'FAILED'}`, fails);
+    if (checked) {
+      const banner = document.getElementById('check-banner');
+      banner.className = ok ? 'ok' : 'fail';
+      banner.textContent = ok ? `self-check: ${result.nodes.length} nodes ok` : `self-check: ${fails.length} failure(s), see console`;
+    }
+    return ok;
+  }
+
+  wireDropzone();
+  wireCanvas();
+  loadInitialData();
+</script>
+
+</body>
+</html>
